@@ -1,4 +1,4 @@
-# Discord Go Bot (Termux 运行)
+# Discord Go Bot
 
 这是一个基于 Go + Discordgo 的聊天机器人示例，具备：
 - 基础对话能力（调用 OpenAI 格式兼容接口）

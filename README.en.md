@@ -109,3 +109,7 @@ If `BOT_CONFIG_FILE` does not exist, it will be created automatically on startup
 - `/emoji` opens as an ephemeral panel by default. Only admins and super admins can trigger emoji analysis.
 - If `/emoji` analysis times out, check the response speed of your OpenAI-compatible endpoint. If needed, set `OPENAI_HTTP_TIMEOUT_SECONDS=600` in `.env`.
 - On startup, the bot clears old slash commands in the current scope before re-registering them in bulk.
+
+## License
+
+This project is licensed under the [MIT License](LICENSE).

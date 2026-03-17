@@ -109,3 +109,7 @@
 - `/emoji` 面板默认以 ephemeral 形式打开；只有管理员和超级管理员可以触发表情分析。
 - 如果 `/emoji` 分析时遇到超时，优先检查你的 OpenAI 兼容站点响应速度；必要时可在 `.env` 里设置 `OPENAI_HTTP_TIMEOUT_SECONDS=600`。
 - 机器人启动时会先清空当前作用域下旧的 slash commands，再批量重新注册，避免逐个删命令带来的额外请求。
+
+## 许可证
+
+本项目使用 [MIT License](LICENSE)。

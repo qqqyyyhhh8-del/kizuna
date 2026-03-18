@@ -42,7 +42,7 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
-- Added the official plugin monorepo `discord-bot-plugins`, containing the first-party `persona`, `proactive`, and `emoji` plugins.
+- Added the official Kizuna plugin monorepo `discord-bot-plugins`, containing the first-party `persona`, `proactive`, and `emoji` plugins.
 - Added new host/plugin capabilities for core-powered replies, guild emoji listing, worldbook read/write, speech allowlist checks, richer interaction components, and admin role visibility in plugin context.
 
 ### Changed

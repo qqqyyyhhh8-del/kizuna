@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"discordbot/internal/memory"
+	"kizuna/internal/memory"
 
 	"github.com/bwmarrin/discordgo"
 )

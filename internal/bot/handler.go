@@ -12,12 +12,12 @@ import (
 	"sync"
 	"time"
 
-	"discordbot/internal/config"
-	"discordbot/internal/memory"
-	"discordbot/internal/openai"
-	"discordbot/internal/pluginhost"
-	"discordbot/internal/runtimecfg"
-	"discordbot/pkg/pluginapi"
+	"kizuna/internal/config"
+	"kizuna/internal/memory"
+	"kizuna/internal/openai"
+	"kizuna/internal/pluginhost"
+	"kizuna/internal/runtimecfg"
+	"kizuna/pkg/pluginapi"
 )
 
 const (

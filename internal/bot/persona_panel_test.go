@@ -5,9 +5,9 @@ import (
 	"strings"
 	"testing"
 
-	"discordbot/internal/config"
-	"discordbot/internal/memory"
-	"discordbot/internal/openai"
+	"kizuna/internal/config"
+	"kizuna/internal/memory"
+	"kizuna/internal/openai"
 
 	"github.com/bwmarrin/discordgo"
 )

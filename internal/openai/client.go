@@ -9,7 +9,7 @@ import (
 	"net/http"
 	"strings"
 
-	"discordbot/internal/config"
+	"kizuna/internal/config"
 )
 
 type Client struct {

@@ -1,5 +1,6 @@
 .env
 bot_config.json
-discordbot
+/discordbot
+/kizuna
 data/
 plugins/

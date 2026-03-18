@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"discordbot/pkg/pluginapi"
+	"kizuna/pkg/pluginapi"
 )
 
 func TestRegistryMigratesLegacyJSONAndPersistsToSQLite(t *testing.T) {

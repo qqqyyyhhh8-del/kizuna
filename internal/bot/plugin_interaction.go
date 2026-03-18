@@ -3,7 +3,7 @@ package bot
 import (
 	"strings"
 
-	"discordbot/pkg/pluginapi"
+	"kizuna/pkg/pluginapi"
 
 	"github.com/bwmarrin/discordgo"
 )

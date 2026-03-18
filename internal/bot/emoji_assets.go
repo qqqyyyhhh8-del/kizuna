@@ -5,7 +5,7 @@ import (
 	"regexp"
 	"strings"
 
-	"discordbot/internal/memory"
+	"kizuna/internal/memory"
 
 	"github.com/bwmarrin/discordgo"
 )

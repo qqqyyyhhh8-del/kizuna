@@ -67,7 +67,7 @@ import (
 	"context"
 	"log"
 
-	"discordbot/pkg/pluginapi"
+	"kizuna/pkg/pluginapi"
 )
 
 type helloPlugin struct {

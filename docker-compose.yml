@@ -1,9 +1,9 @@
 services:
-  discordbot:
+  kizuna:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: discordbot
+    container_name: kizuna
     restart: unless-stopped
     init: true
     env_file:

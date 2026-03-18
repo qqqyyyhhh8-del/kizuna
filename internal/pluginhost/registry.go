@@ -11,8 +11,8 @@ import (
 	"strings"
 	"sync"
 
-	sqlitestorage "discordbot/internal/storage/sqlite"
-	"discordbot/pkg/pluginapi"
+	sqlitestorage "kizuna/internal/storage/sqlite"
+	"kizuna/pkg/pluginapi"
 )
 
 const (

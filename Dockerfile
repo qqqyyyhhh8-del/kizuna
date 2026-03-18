@@ -8,7 +8,7 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
-RUN CGO_ENABLED=1 go build -o /out/discordbot ./cmd/discordbot
+RUN CGO_ENABLED=1 go build -o /out/kizuna ./cmd/kizuna
 
 FROM golang:1.25-bookworm
 
@@ -18,7 +18,7 @@ RUN apt-get update \
 	&& apt-get install -y --no-install-recommends ca-certificates git \
 	&& rm -rf /var/lib/apt/lists/*
 
-COPY --from=build /out/discordbot /usr/local/bin/discordbot
+COPY --from=build /out/kizuna /usr/local/bin/kizuna
 
 ENV BOT_SQLITE_PATH=/data/bot.db
 ENV BOT_CONFIG_FILE=/data/bot_config.json
@@ -26,4 +26,4 @@ ENV PLUGINS_DIR=/data/plugins
 
 VOLUME ["/data"]
 
-CMD ["discordbot"]
+CMD ["kizuna"]

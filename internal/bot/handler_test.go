@@ -8,10 +8,10 @@ import (
 	"testing"
 	"time"
 
-	"discordbot/internal/config"
-	"discordbot/internal/memory"
-	"discordbot/internal/openai"
-	"discordbot/internal/runtimecfg"
+	"kizuna/internal/config"
+	"kizuna/internal/memory"
+	"kizuna/internal/openai"
+	"kizuna/internal/runtimecfg"
 
 	"github.com/bwmarrin/discordgo"
 )

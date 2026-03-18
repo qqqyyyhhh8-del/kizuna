@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
-	"discordbot/internal/pluginhost"
-	"discordbot/pkg/pluginapi"
+	"kizuna/internal/pluginhost"
+	"kizuna/pkg/pluginapi"
 
 	"github.com/bwmarrin/discordgo"
 )

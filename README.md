@@ -1,4 +1,4 @@
-# Discord Go Bot
+# Kizuna
 
 [简体中文](README.md) | [English](README.en.md) | [插件编写指南](PLUGIN_GUIDE.md)
 
@@ -22,12 +22,12 @@
 - **多模态输入**：用户消息中的服务器自定义表情会转成图片一起发给聊天模型；图片附件也会作为图片输入发送。
 - **自动总结**：当对话条数超过阈值时生成摘要并保留关键信息。
 - **RAG 检索**：对历史用户消息生成 embedding，召回后可选再走 rerank 重排。
-- **官方插件**：`/persona`、`/emoji`、`/proactive` 已迁移到官方插件仓库 `discord-bot-plugins`，按需安装后即可注册对应 Slash 命令。
+- **官方插件**：`/persona`、`/emoji`、`/proactive` 已迁移到 Kizuna 官方插件仓库（当前仓库名为 `discord-bot-plugins`），按需安装后即可注册对应 Slash 命令。
 - **允许发言范围**：机器人默认不会在任何服务器、频道、子区发言；管理员需要在目标位置直接执行 `/setup` 打开管理面板，并按当前上下文放行服务器、频道或子区。
 - **插件生态**：支持从 Git 仓库安装外部进程插件；插件通过 JSON-RPC over stdio 接入，可注册自己的 slash 命令、处理消息、追加 prompt、改写回复，并使用受控能力访问宿主。
 
 ## 官方插件
-- 官方插件仓库：[`qqqyyyhhh8-del/discord-bot-plugins`](https://github.com/qqqyyyhhh8-del/discord-bot-plugins)
+- Kizuna 官方插件仓库：[`qqqyyyhhh8-del/discord-bot-plugins`](https://github.com/qqqyyyhhh8-del/discord-bot-plugins)
 - 在 `/plugin` 面板点击 `安装`，然后填写：
   人设管理：`repo=https://github.com/qqqyyyhhh8-del/discord-bot-plugins.git`，`path=plugins/persona`
   主动回复：`repo=https://github.com/qqqyyyhhh8-del/discord-bot-plugins.git`，`path=plugins/proactive`
@@ -58,8 +58,8 @@
 ## 快速开始
 1. 拉取仓库并进入目录：
    ```bash
-   git clone <你的仓库地址>
-   cd discord-
+   git clone <你的仓库地址> kizuna
+   cd kizuna
    ```
 2. 创建 `.env`：
    ```bash
@@ -68,7 +68,7 @@
 3. 按需编辑 `.env`。
 4. 启动：
    ```bash
-   go run ./cmd/discordbot
+   go run ./cmd/kizuna
    ```
 
 程序启动时会自动读取当前目录下的 `.env`。如果你已经在系统环境里设置了同名变量，系统环境优先。

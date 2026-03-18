@@ -16,8 +16,8 @@ import (
 	"strings"
 	"time"
 
-	"discordbot/internal/openai"
-	"discordbot/internal/runtimecfg"
+	"kizuna/internal/openai"
+	"kizuna/internal/runtimecfg"
 
 	"github.com/bwmarrin/discordgo"
 )

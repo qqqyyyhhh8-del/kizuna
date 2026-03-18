@@ -11,7 +11,7 @@ import (
 	"strconv"
 	"strings"
 
-	"discordbot/pkg/pluginapi"
+	"kizuna/pkg/pluginapi"
 )
 
 func (m *Manager) InstallFromGit(ctx context.Context, repo, ref, sourcePath string) (InstalledPlugin, error) {

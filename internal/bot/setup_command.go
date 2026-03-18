@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	"discordbot/internal/runtimecfg"
+	"kizuna/internal/runtimecfg"
 
 	"github.com/bwmarrin/discordgo"
 )

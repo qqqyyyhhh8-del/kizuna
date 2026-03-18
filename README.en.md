@@ -1,4 +1,4 @@
-# Discord Go Bot
+# Kizuna
 
 [简体中文](README.md) | [English](README.en.md) | [Plugin Guide](PLUGIN_GUIDE.en.md)
 
@@ -22,12 +22,12 @@ This is a Discord bot built with Go + Discordgo. It includes:
 - **Multimodal input**: Custom guild emojis in user messages are converted into images and sent to the chat model. Image attachments are also included as image input.
 - **Auto summary**: Generates summaries after the message count crosses a threshold.
 - **RAG retrieval**: Embeds historical user messages, retrieves relevant items, and optionally reranks them.
-- **Official plugins**: `/persona`, `/emoji`, and `/proactive` now live in the official `discord-bot-plugins` repository and are installed on demand.
+- **Official plugins**: `/persona`, `/emoji`, and `/proactive` now live in the official Kizuna plugin repository, whose current GitHub repo name is `discord-bot-plugins`, and are installed on demand.
 - **Allowed speaking scope**: By default the bot is not allowed to speak in any guild, channel, or thread. Admins must run `/setup` in the target location and use the panel buttons to allow the current guild, channel, or thread.
 - **Plugin ecosystem**: External process plugins can be installed from Git repositories. Plugins connect over JSON-RPC over stdio and can register slash commands, receive message events, inject prompt blocks, and postprocess model replies with capability checks.
 
 ## Official Plugins
-- Official plugin repo: [`qqqyyyhhh8-del/discord-bot-plugins`](https://github.com/qqqyyyhhh8-del/discord-bot-plugins)
+- Official Kizuna plugin repo: [`qqqyyyhhh8-del/discord-bot-plugins`](https://github.com/qqqyyyhhh8-del/discord-bot-plugins)
 - Open the `/plugin` panel, click `Install`, then fill in:
   Persona: `repo=https://github.com/qqqyyyhhh8-del/discord-bot-plugins.git`, `path=plugins/persona`
   Proactive: `repo=https://github.com/qqqyyyhhh8-del/discord-bot-plugins.git`, `path=plugins/proactive`
@@ -58,8 +58,8 @@ After installation, the host will register `/persona`, `/proactive`, and `/emoji
 ## Quick Start
 1. Clone the repo and enter the directory:
    ```bash
-   git clone <your-repo-url>
-   cd discord-
+   git clone <your-repo-url> kizuna
+   cd kizuna
    ```
 2. Create `.env`:
    ```bash
@@ -68,7 +68,7 @@ After installation, the host will register `/persona`, `/proactive`, and `/emoji
 3. Edit `.env` as needed.
 4. Start the bot:
    ```bash
-   go run ./cmd/discordbot
+   go run ./cmd/kizuna
    ```
 
 The bot loads `.env` from the current directory automatically. Existing shell environment variables take precedence over `.env`.

@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	sqlitestorage "discordbot/internal/storage/sqlite"
+	sqlitestorage "kizuna/internal/storage/sqlite"
 )
 
 func TestAddMessageIndexesWithDetachedContext(t *testing.T) {

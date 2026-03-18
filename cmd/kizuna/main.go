@@ -8,14 +8,14 @@ import (
 	"syscall"
 	"time"
 
-	"discordbot/internal/bot"
-	"discordbot/internal/buildinfo"
-	"discordbot/internal/config"
-	"discordbot/internal/memory"
-	"discordbot/internal/openai"
-	"discordbot/internal/pluginhost"
-	"discordbot/internal/runtimecfg"
-	sqlitestorage "discordbot/internal/storage/sqlite"
+	"kizuna/internal/bot"
+	"kizuna/internal/buildinfo"
+	"kizuna/internal/config"
+	"kizuna/internal/memory"
+	"kizuna/internal/openai"
+	"kizuna/internal/pluginhost"
+	"kizuna/internal/runtimecfg"
+	sqlitestorage "kizuna/internal/storage/sqlite"
 )
 
 func main() {
@@ -70,7 +70,7 @@ func main() {
 	if err := session.Open(); err != nil {
 		log.Fatal(err)
 	}
-	log.Printf("Bot is running (%s). Press CTRL-C to exit.", buildinfo.Version)
+	log.Printf("Kizuna is running (%s). Press CTRL-C to exit.", buildinfo.Version)
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)

@@ -12,7 +12,7 @@ import (
 	"strings"
 	"sync"
 
-	sqlitestorage "discordbot/internal/storage/sqlite"
+	sqlitestorage "kizuna/internal/storage/sqlite"
 )
 
 type Data struct {

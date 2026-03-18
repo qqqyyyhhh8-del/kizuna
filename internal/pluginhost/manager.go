@@ -16,9 +16,9 @@ import (
 	"sync"
 	"time"
 
-	"discordbot/internal/openai"
-	"discordbot/internal/runtimecfg"
-	"discordbot/pkg/pluginapi"
+	"kizuna/internal/openai"
+	"kizuna/internal/runtimecfg"
+	"kizuna/pkg/pluginapi"
 
 	"github.com/bwmarrin/discordgo"
 )

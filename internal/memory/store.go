@@ -12,7 +12,7 @@ import (
 
 	sqlitevec "github.com/asg017/sqlite-vec-go-bindings/cgo"
 
-	sqlitestorage "discordbot/internal/storage/sqlite"
+	sqlitestorage "kizuna/internal/storage/sqlite"
 )
 
 var utc8Location = time.FixedZone("UTC+8", 8*60*60)

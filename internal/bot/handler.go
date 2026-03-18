@@ -68,7 +68,7 @@ func (h *Handler) SetPluginManager(manager *pluginhost.Manager) {
 }
 
 func (h *Handler) HandleMessage(ctx context.Context, channelID, authorID, content string) (string, error) {
-	return h.HandleMessageRecord(ctx, channelID, memory.MessageRecord{
+	return h.HandleMessageAtLocation(ctx, speechLocation{ChannelID: channelID}, memory.MessageRecord{
 		Role:    "user",
 		Content: content,
 		Author: memory.MessageAuthor{
@@ -80,6 +80,13 @@ func (h *Handler) HandleMessage(ctx context.Context, channelID, authorID, conten
 }
 
 func (h *Handler) HandleMessageRecord(ctx context.Context, channelID string, record memory.MessageRecord) (string, error) {
+	return h.HandleMessageAtLocation(ctx, speechLocation{
+		GuildID:   record.GuildID,
+		ChannelID: channelID,
+	}, record)
+}
+
+func (h *Handler) HandleMessageAtLocation(ctx context.Context, location speechLocation, record memory.MessageRecord) (string, error) {
 	record.Role = strings.TrimSpace(record.Role)
 	if record.Role == "" {
 		record.Role = "user"
@@ -92,46 +99,83 @@ func (h *Handler) HandleMessageRecord(ctx context.Context, channelID string, rec
 		return "", err
 	}
 
-	h.store.AddRecord(ctx, channelID, record)
+	location.GuildID = firstNonEmpty(strings.TrimSpace(location.GuildID), strings.TrimSpace(record.GuildID))
+	currentMessage := pluginMessageContextFromRecordAtLocation(record, location)
+	systemPrompt, personaPrompt := h.runtimeStore.ComposePromptsForLocation(h.cfg.SystemPrompt, location.GuildID, location.ChannelID, location.ThreadID)
 
-	summary, recent := h.store.SummaryAndRecent(channelID)
-	if shouldSummarize(recent) {
-		summaryContent, err := h.chatFn(ctx, summarizationPrompt(summary, recent))
-		if err != nil {
-			log.Printf("summary error: %v", err)
-		} else {
-			h.store.SetSummary(channelID, summaryContent)
-			h.store.TrimHistory(channelID, maxHistoryMessages)
-			summary = summaryContent
-			_, recent = h.store.SummaryAndRecent(channelID)
-		}
+	overrideContext, err := h.buildPluginConversationContext(ctx, currentMessage, systemPrompt, personaPrompt)
+	if err != nil {
+		log.Printf("plugin context build error: %v", err)
 	}
 
+	summary := ""
+	var recent []memory.MessageRecord
 	var retrieved []string
-	if strings.TrimSpace(record.Content) != "" {
-		queryEmbedding, err := h.embedFn(ctx, record.Content)
-		if err != nil {
-			log.Printf("embed error: %v", err)
-		} else {
-			retrieved = h.retrieveRelevantMemories(ctx, channelID, record.Content, queryEmbedding)
+	pluginBlocks := make([]pluginapi.PromptBlock, 0)
+	providerActive := overrideContext != nil
+
+	channelID := strings.TrimSpace(location.ThreadID)
+	if channelID == "" {
+		channelID = strings.TrimSpace(location.ChannelID)
+	}
+
+	if providerActive {
+		systemPrompt = firstNonEmpty(strings.TrimSpace(overrideContext.SystemPrompt), systemPrompt)
+		personaPrompt = firstNonEmpty(strings.TrimSpace(overrideContext.PersonaPrompt), personaPrompt)
+		summary = strings.TrimSpace(overrideContext.Summary)
+		retrieved = trimNonEmptyStrings(overrideContext.Retrieved)
+		recent = promptConversationMessagesToRecords(overrideContext.Recent)
+		pluginBlocks = append(pluginBlocks, overrideContext.PromptBlocks...)
+	} else {
+		h.store.AddRecord(ctx, channelID, record)
+
+		summary, recent = h.store.SummaryAndRecent(channelID)
+		if shouldSummarize(recent) {
+			summaryContent, err := h.chatFn(ctx, summarizationPrompt(summary, recent))
+			if err != nil {
+				log.Printf("summary error: %v", err)
+			} else {
+				h.store.SetSummary(channelID, summaryContent)
+				h.store.TrimHistory(channelID, maxHistoryMessages)
+				summary = summaryContent
+				_, recent = h.store.SummaryAndRecent(channelID)
+			}
+		}
+
+		if strings.TrimSpace(record.Content) != "" {
+			queryEmbedding, err := h.embedFn(ctx, record.Content)
+			if err != nil {
+				log.Printf("embed error: %v", err)
+			} else {
+				retrieved = h.retrieveRelevantMemories(ctx, channelID, record.Content, queryEmbedding)
+			}
 		}
 	}
 
-	systemPrompt, personaPrompt := h.runtimeStore.ComposePromptsForGuild(h.cfg.SystemPrompt, record.GuildID)
-	if h.pluginManager != nil && h.pluginManager.CanHandleSlashCommand("persona") {
-		personaPrompt = ""
-	}
-	pluginBlocks := h.buildPluginPromptBlocks(ctx, systemPrompt, personaPrompt, summary, recent, retrieved, record)
+	pluginBlocks = append(pluginBlocks, h.buildPluginPromptBlocks(ctx, currentMessage, systemPrompt, personaPrompt, summary, recent, retrieved)...)
 	response, err := h.chatFn(ctx, buildChatMessages(systemPrompt, personaPrompt, summary, recent, retrieved, pluginBlocks))
 	if err != nil {
 		return "", err
 	}
-	response = h.postprocessPluginResponse(ctx, record, response)
-	h.store.AddRecord(ctx, channelID, memory.MessageRecord{
-		Role:    "assistant",
-		Content: response,
-	})
+	response = h.postprocessPluginResponse(ctx, currentMessage, response)
+	if !providerActive {
+		h.store.AddRecord(ctx, channelID, memory.MessageRecord{
+			Role:    "assistant",
+			Content: response,
+		})
+	}
 	return response, nil
+}
+
+func (h *Handler) buildPluginConversationContext(ctx context.Context, currentMessage pluginapi.MessageContext, systemPrompt, personaPrompt string) (*pluginapi.ContextBuildResponse, error) {
+	if h == nil || h.pluginManager == nil {
+		return nil, nil
+	}
+	return h.pluginManager.BuildConversationContext(ctx, pluginapi.ContextBuildRequest{
+		CurrentMessage:       currentMessage,
+		CurrentSystemPrompt:  strings.TrimSpace(systemPrompt),
+		CurrentPersonaPrompt: strings.TrimSpace(personaPrompt),
+	})
 }
 
 func (h *Handler) retrieveRelevantMemories(ctx context.Context, channelID, query string, queryEmbedding []float64) []string {
@@ -157,6 +201,27 @@ func (h *Handler) retrieveRelevantMemories(ctx context.Context, channelID, query
 	return matchRenderedMemories(candidates, reranked, retrievalTopK)
 }
 
+func shouldSummarize(messages []memory.MessageRecord) bool {
+	return len(messages) >= summaryTriggerCount
+}
+
+func summarizationPrompt(summary string, messages []memory.MessageRecord) []openai.ChatMessage {
+	var builder strings.Builder
+	if summary != "" {
+		builder.WriteString("当前已知摘要:\n")
+		builder.WriteString(summary)
+		builder.WriteString("\n\n")
+	}
+	builder.WriteString("需要总结的新对话:\n")
+	for _, msg := range messages {
+		builder.WriteString(fmt.Sprintf("[%s]\n%s\n\n", msg.Role, renderMessageForLLM(msg)))
+	}
+	builder.WriteString("\n请用简洁中文更新摘要，保留关键事实、偏好和待办。")
+	return []openai.ChatMessage{
+		{Role: "system", Content: "你是一个对话摘要助手。"},
+		{Role: "user", Content: builder.String()},
+	}
+}
 func (h *Handler) ShouldProactiveReply() bool {
 	if h == nil || h.runtimeStore == nil {
 		return false
@@ -338,28 +403,6 @@ func (h *Handler) handleAdminCommand(content, authorID string) (string, error) {
 	}
 }
 
-func shouldSummarize(messages []memory.MessageRecord) bool {
-	return len(messages) >= summaryTriggerCount
-}
-
-func summarizationPrompt(summary string, messages []memory.MessageRecord) []openai.ChatMessage {
-	var builder strings.Builder
-	if summary != "" {
-		builder.WriteString("当前已知摘要:\n")
-		builder.WriteString(summary)
-		builder.WriteString("\n\n")
-	}
-	builder.WriteString("需要总结的新对话:\n")
-	for _, msg := range messages {
-		builder.WriteString(fmt.Sprintf("[%s]\n%s\n\n", msg.Role, renderMessageForLLM(msg)))
-	}
-	builder.WriteString("\n请用简洁中文更新摘要，保留关键事实、偏好和待办。")
-	return []openai.ChatMessage{
-		{Role: "system", Content: "你是一个对话摘要助手。"},
-		{Role: "user", Content: builder.String()},
-	}
-}
-
 func buildChatMessages(systemPrompt, personaPrompt, summary string, recent []memory.MessageRecord, retrieved []string, blocks []pluginapi.PromptBlock) []openai.ChatMessage {
 	messages := []openai.ChatMessage{{Role: "system", Content: systemPrompt}}
 	if personaPrompt != "" {
@@ -435,7 +478,7 @@ func renderMessageForLLM(msg memory.MessageRecord) string {
 	return msg.RenderForModel()
 }
 
-func (h *Handler) buildPluginPromptBlocks(ctx context.Context, systemPrompt, personaPrompt, summary string, recent []memory.MessageRecord, retrieved []string, record memory.MessageRecord) []pluginapi.PromptBlock {
+func (h *Handler) buildPluginPromptBlocks(ctx context.Context, currentMessage pluginapi.MessageContext, systemPrompt, personaPrompt, summary string, recent []memory.MessageRecord, retrieved []string) []pluginapi.PromptBlock {
 	if h == nil || h.pluginManager == nil {
 		return nil
 	}
@@ -449,7 +492,7 @@ func (h *Handler) buildPluginPromptBlocks(ctx context.Context, systemPrompt, per
 	}
 
 	blocks, err := h.pluginManager.BuildPromptBlocks(ctx, pluginapi.PromptBuildRequest{
-		CurrentMessage:       pluginMessageContextFromRecord(record),
+		CurrentMessage:       currentMessage,
 		CurrentSystemPrompt:  strings.TrimSpace(systemPrompt),
 		CurrentPersonaPrompt: strings.TrimSpace(personaPrompt),
 		Summary:              strings.TrimSpace(summary),
@@ -463,13 +506,13 @@ func (h *Handler) buildPluginPromptBlocks(ctx context.Context, systemPrompt, per
 	return blocks
 }
 
-func (h *Handler) postprocessPluginResponse(ctx context.Context, record memory.MessageRecord, response string) string {
+func (h *Handler) postprocessPluginResponse(ctx context.Context, currentMessage pluginapi.MessageContext, response string) string {
 	if h == nil || h.pluginManager == nil || strings.TrimSpace(response) == "" {
 		return strings.TrimSpace(response)
 	}
 
 	postprocessed, err := h.pluginManager.PostprocessResponse(ctx, pluginapi.ResponsePostprocessRequest{
-		CurrentMessage: pluginMessageContextFromRecord(record),
+		CurrentMessage: currentMessage,
 		Response:       strings.TrimSpace(response),
 	})
 	if err != nil {
@@ -477,6 +520,37 @@ func (h *Handler) postprocessPluginResponse(ctx context.Context, record memory.M
 		return strings.TrimSpace(response)
 	}
 	return strings.TrimSpace(postprocessed)
+}
+
+func promptConversationMessagesToRecords(messages []pluginapi.PromptConversationMessage) []memory.MessageRecord {
+	records := make([]memory.MessageRecord, 0, len(messages))
+	for _, message := range messages {
+		role := strings.TrimSpace(message.Role)
+		if role == "" {
+			role = "user"
+		}
+		content := strings.TrimSpace(message.Content)
+		if content == "" {
+			continue
+		}
+		records = append(records, memory.MessageRecord{
+			Role:    role,
+			Content: content,
+		})
+	}
+	return records
+}
+
+func trimNonEmptyStrings(values []string) []string {
+	filtered := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		filtered = append(filtered, value)
+	}
+	return filtered
 }
 
 func DefaultTimeout() time.Duration {

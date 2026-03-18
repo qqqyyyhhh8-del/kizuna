@@ -361,13 +361,14 @@ func sendMessageReply(s *discordgo.Session, trigger *discordgo.MessageCreate, co
 func handleIncomingMessage(s *discordgo.Session, m *discordgo.MessageCreate, handler *Handler, content string) {
 	ctx, cancel := context.WithTimeout(context.Background(), DefaultTimeout())
 	defer cancel()
+	location := speechLocationForDiscordMessage(s, m)
 
 	stopTyping := startTypingLoop(ctx, m.ChannelID, func(channelID string) error {
 		return s.ChannelTyping(channelID)
 	}, typingRefreshInterval)
 	defer stopTyping()
 
-	response, err := handler.HandleMessageRecord(ctx, m.ChannelID, messageRecordForDiscordMessage(m, content, botUserIDFromSession(s)))
+	response, err := handler.HandleMessageAtLocation(ctx, location, messageRecordForDiscordMessage(m, content, botUserIDFromSession(s)))
 	if err != nil {
 		if _, sendErr := sendMessageReply(s, m, "抱歉，我现在无法回应。"); sendErr != nil {
 			log.Printf("failed to send fallback error reply: guild=%s channel=%s trigger=%s err=%v", strings.TrimSpace(m.GuildID), strings.TrimSpace(m.ChannelID), strings.TrimSpace(m.ID), sendErr)
@@ -377,8 +378,16 @@ func handleIncomingMessage(s *discordgo.Session, m *discordgo.MessageCreate, han
 	if strings.TrimSpace(response) == "" {
 		return
 	}
-	if _, err := sendMessageReply(s, m, response); err != nil {
+	replyMessage, err := sendMessageReply(s, m, response)
+	if err != nil {
 		log.Printf("failed to send response message: guild=%s channel=%s trigger=%s err=%v", strings.TrimSpace(m.GuildID), strings.TrimSpace(m.ChannelID), strings.TrimSpace(m.ID), err)
+		return
+	}
+	if handler != nil && handler.pluginManager != nil {
+		handler.pluginManager.DispatchReplyCommitted(ctx, pluginapi.ReplyCommittedRequest{
+			TriggerMessage: pluginMessageEventFromDiscord(s, m, content).Message,
+			ReplyMessage:   pluginMessageContextFromDiscordMessage(s, replyMessage, m.GuildID),
+		})
 	}
 }
 
@@ -473,24 +482,37 @@ func (s *Session) replyToPluginMessage(ctx context.Context, message pluginapi.Me
 		}
 	}
 
-	done := make(chan error, 1)
+	type result struct {
+		message *discordgo.Message
+		err     error
+	}
+	done := make(chan result, 1)
 	go func() {
-		_, err := s.session.ChannelMessageSendComplex(channelID, send)
+		sent, err := s.session.ChannelMessageSendComplex(channelID, send)
 		if err == nil || send.Reference == nil {
-			done <- err
+			done <- result{message: sent, err: err}
 			return
 		}
 
 		log.Printf("plugin reply send failed, retrying without message reference: guild=%s channel=%s trigger=%s err=%v", strings.TrimSpace(message.Guild.ID), channelID, strings.TrimSpace(message.MessageID), err)
-		_, retryErr := s.session.ChannelMessageSendComplex(channelID, buildPlainMessageSend(response))
-		done <- retryErr
+		sent, retryErr := s.session.ChannelMessageSendComplex(channelID, buildPlainMessageSend(response))
+		done <- result{message: sent, err: retryErr}
 	}()
 
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
-	case err := <-done:
-		return err
+	case outcome := <-done:
+		if outcome.err != nil {
+			return outcome.err
+		}
+		if s.handler != nil && s.handler.pluginManager != nil {
+			s.handler.pluginManager.DispatchReplyCommitted(ctx, pluginapi.ReplyCommittedRequest{
+				TriggerMessage: message,
+				ReplyMessage:   pluginMessageContextFromDiscordMessage(s.session, outcome.message, message.Guild.ID),
+			})
+		}
+		return nil
 	}
 }
 

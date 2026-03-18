@@ -31,6 +31,10 @@ func (m *Manager) InstallFromGit(ctx context.Context, repo, ref, sourcePath stri
 		_ = os.RemoveAll(repoDir)
 		return InstalledPlugin{}, err
 	}
+	if err := m.ensureContextProviderAvailable("", manifest); err != nil {
+		_ = os.RemoveAll(repoDir)
+		return InstalledPlugin{}, err
+	}
 	finalDir := m.registry.RepoDirectory(manifest.ID)
 	if _, err := os.Stat(finalDir); err == nil {
 		// Clean up orphaned checkouts left behind by failed installs or older
@@ -98,7 +102,12 @@ func (m *Manager) UpgradeFromGit(ctx context.Context, pluginID, ref string) (Ins
 		_ = os.RemoveAll(repoDir)
 		return InstalledPlugin{}, err
 	}
-
+	if current.Enabled {
+		if err := m.ensureContextProviderAvailable(current.ID, manifest); err != nil {
+			_ = os.RemoveAll(repoDir)
+			return InstalledPlugin{}, err
+		}
+	}
 	if err := m.stopPlugin(current.ID); err != nil {
 		_ = os.RemoveAll(repoDir)
 		return InstalledPlugin{}, err
@@ -156,10 +165,17 @@ func (m *Manager) Remove(pluginID string) error {
 }
 
 func (m *Manager) EnableGlobal(pluginID string) error {
+	plugin, ok := m.registry.Get(pluginID)
+	if !ok {
+		return errors.New("plugin not found")
+	}
+	if err := m.ensureContextProviderAvailable(pluginID, plugin.Manifest); err != nil {
+		return err
+	}
 	if err := m.registry.SetEnabled(pluginID, true); err != nil {
 		return err
 	}
-	plugin, _ := m.registry.Get(pluginID)
+	plugin, _ = m.registry.Get(pluginID)
 	if _, err := m.startPlugin(plugin); err != nil {
 		_ = m.registry.SetLastError(pluginID, err.Error())
 	}
@@ -177,6 +193,13 @@ func (m *Manager) DisableGlobal(pluginID string) error {
 }
 
 func (m *Manager) AllowGuild(pluginID, guildID string) error {
+	plugin, ok := m.registry.Get(pluginID)
+	if !ok {
+		return errors.New("plugin not found")
+	}
+	if err := m.ensureContextProviderAvailable(pluginID, plugin.Manifest); err != nil {
+		return err
+	}
 	return m.registry.AllowGuild(pluginID, guildID)
 }
 
@@ -289,6 +312,9 @@ func (m *Manager) validateManifest(manifest pluginapi.Manifest, excludingPluginI
 	if err := validateManifestConfigSchema(manifest); err != nil {
 		return err
 	}
+	if err := m.validateManifestDependencies(manifest, excludingPluginID); err != nil {
+		return err
+	}
 	for _, command := range manifest.Commands {
 		if _, ok := m.reservedCommands[command.Name]; ok {
 			return fmt.Errorf("plugin command conflicts with core command: %s", command.Name)
@@ -321,6 +347,46 @@ func (m *Manager) validateManifest(manifest pluginapi.Manifest, excludingPluginI
 		}
 	}
 	return nil
+}
+
+func (m *Manager) validateManifestDependencies(manifest pluginapi.Manifest, excludingPluginID string) error {
+	for _, dependency := range manifest.Dependencies {
+		if strings.TrimSpace(dependency.ID) == "" || dependency.ID == excludingPluginID {
+			continue
+		}
+		installed, ok := m.registry.Get(dependency.ID)
+		if !ok {
+			return fmt.Errorf("missing plugin dependency: %s", dependency.ID)
+		}
+		if err := ensureMinPluginVersion(installed.Version, dependency.MinVersion); err != nil {
+			return fmt.Errorf("plugin dependency %s: %w", dependency.ID, err)
+		}
+	}
+	return nil
+}
+
+func (m *Manager) ensureContextProviderAvailable(excludingPluginID string, manifest pluginapi.Manifest) error {
+	if !hasManifestCapability(manifest, pluginapi.CapabilityContextProvide) {
+		return nil
+	}
+	for _, plugin := range m.registry.List() {
+		if plugin.ID == excludingPluginID || !plugin.Enabled {
+			continue
+		}
+		if m.hasCapability(plugin, pluginapi.CapabilityContextProvide) {
+			return fmt.Errorf("context provider conflict: %s is already enabled", plugin.ID)
+		}
+	}
+	return nil
+}
+
+func hasManifestCapability(manifest pluginapi.Manifest, capability pluginapi.Capability) bool {
+	for _, item := range manifest.Capabilities {
+		if item == capability {
+			return true
+		}
+	}
+	return false
 }
 
 func runGit(ctx context.Context, dir string, args ...string) error {
@@ -366,6 +432,31 @@ func ensureMinHostVersion(current, required string) error {
 		}
 		if currentParts[index] < requiredParts[index] {
 			return fmt.Errorf("plugin requires host version %s or newer", required)
+		}
+	}
+	return nil
+}
+
+func ensureMinPluginVersion(current, required string) error {
+	current = strings.TrimSpace(current)
+	required = strings.TrimSpace(required)
+	if required == "" || current == "" {
+		return nil
+	}
+	currentParts, err := parseSemver(current)
+	if err != nil {
+		return fmt.Errorf("invalid installed plugin version: %s", current)
+	}
+	requiredParts, err := parseSemver(required)
+	if err != nil {
+		return fmt.Errorf("invalid plugin dependency min_version: %s", required)
+	}
+	for index := range requiredParts {
+		if currentParts[index] > requiredParts[index] {
+			return nil
+		}
+		if currentParts[index] < requiredParts[index] {
+			return fmt.Errorf("requires version %s or newer, installed %s", required, current)
 		}
 	}
 	return nil

@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	sqlitestorage "kizuna/internal/storage/sqlite"
 	"kizuna/pkg/pluginapi"
@@ -339,6 +340,164 @@ func (r *Registry) StorageKeys(pluginID, prefix string) ([]string, error) {
 	return keys, nil
 }
 
+func (r *Registry) RecordsGet(pluginID, collection, key string) (json.RawMessage, string, bool, error) {
+	pluginID = strings.TrimSpace(pluginID)
+	collection = strings.TrimSpace(collection)
+	key = strings.TrimSpace(key)
+	if pluginID == "" {
+		return nil, "", false, errors.New("plugin id is required")
+	}
+	if collection == "" {
+		return nil, "", false, errors.New("record collection is required")
+	}
+	if key == "" {
+		return nil, "", false, errors.New("record key is required")
+	}
+
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	var (
+		value     string
+		updatedAt string
+	)
+	err := r.db.QueryRow(`
+SELECT value_json, updated_at
+FROM plugin_records
+WHERE plugin_id = ? AND collection = ? AND record_key = ?
+`, pluginID, collection, key).Scan(&value, &updatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, "", false, nil
+	}
+	if err != nil {
+		return nil, "", false, err
+	}
+	return json.RawMessage(value), strings.TrimSpace(updatedAt), true, nil
+}
+
+func (r *Registry) RecordsPut(pluginID, collection, key string, value json.RawMessage) error {
+	pluginID = strings.TrimSpace(pluginID)
+	collection = strings.TrimSpace(collection)
+	key = strings.TrimSpace(key)
+	value = normalizeRawJSON(value)
+	if pluginID == "" {
+		return errors.New("plugin id is required")
+	}
+	if collection == "" {
+		return errors.New("record collection is required")
+	}
+	if key == "" {
+		return errors.New("record key is required")
+	}
+	if len(value) == 0 {
+		return errors.New("record value is required")
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	_, err := r.db.Exec(`
+INSERT INTO plugin_records (plugin_id, collection, record_key, value_json, updated_at)
+VALUES (?, ?, ?, ?, ?)
+ON CONFLICT(plugin_id, collection, record_key) DO UPDATE SET
+	value_json = excluded.value_json,
+	updated_at = excluded.updated_at
+`, pluginID, collection, key, string(value), time.Now().UTC().Format(time.RFC3339))
+	return err
+}
+
+func (r *Registry) RecordsDelete(pluginID, collection, key string) error {
+	pluginID = strings.TrimSpace(pluginID)
+	collection = strings.TrimSpace(collection)
+	key = strings.TrimSpace(key)
+	if pluginID == "" {
+		return errors.New("plugin id is required")
+	}
+	if collection == "" {
+		return errors.New("record collection is required")
+	}
+	if key == "" {
+		return errors.New("record key is required")
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	_, err := r.db.Exec(`
+DELETE FROM plugin_records
+WHERE plugin_id = ? AND collection = ? AND record_key = ?
+`, pluginID, collection, key)
+	return err
+}
+
+func (r *Registry) RecordsList(pluginID string, request pluginapi.RecordsListRequest) ([]pluginapi.RecordItem, string, error) {
+	pluginID = strings.TrimSpace(pluginID)
+	request.Collection = strings.TrimSpace(request.Collection)
+	request.Prefix = strings.TrimSpace(request.Prefix)
+	request.Cursor = strings.TrimSpace(request.Cursor)
+	if pluginID == "" {
+		return nil, "", errors.New("plugin id is required")
+	}
+	if request.Collection == "" {
+		return nil, "", errors.New("record collection is required")
+	}
+
+	limit := request.Limit
+	switch {
+	case limit <= 0:
+		limit = 50
+	case limit > 200:
+		limit = 200
+	}
+
+	pattern := "%"
+	if request.Prefix != "" {
+		pattern = request.Prefix + "%"
+	}
+
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	rows, err := r.db.Query(`
+SELECT record_key, value_json, updated_at
+FROM plugin_records
+WHERE plugin_id = ? AND collection = ? AND record_key LIKE ? AND record_key > ?
+ORDER BY record_key ASC
+LIMIT ?
+`, pluginID, request.Collection, pattern, request.Cursor, limit+1)
+	if err != nil {
+		return nil, "", err
+	}
+	defer rows.Close()
+
+	items := make([]pluginapi.RecordItem, 0, limit+1)
+	for rows.Next() {
+		var (
+			key       string
+			value     string
+			updatedAt string
+		)
+		if err := rows.Scan(&key, &value, &updatedAt); err != nil {
+			return nil, "", err
+		}
+		items = append(items, pluginapi.RecordItem{
+			Key:       strings.TrimSpace(key),
+			Value:     json.RawMessage(value),
+			UpdatedAt: strings.TrimSpace(updatedAt),
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, "", err
+	}
+
+	nextCursor := ""
+	if len(items) > limit {
+		nextCursor = items[limit-1].Key
+		items = items[:limit]
+	}
+	return items, nextCursor, nil
+}
+
 func (r *Registry) AllowsGuild(plugin InstalledPlugin, guildID string) bool {
 	if !plugin.Enabled {
 		return false
@@ -415,7 +574,18 @@ func (r *Registry) ensureSchemaLocked() error {
 CREATE TABLE IF NOT EXISTS plugin_registry_state (
 	id INTEGER PRIMARY KEY CHECK (id = 1),
 	payload_json TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS plugin_records (
+	plugin_id TEXT NOT NULL,
+	collection TEXT NOT NULL,
+	record_key TEXT NOT NULL,
+	value_json TEXT NOT NULL,
+	updated_at TEXT NOT NULL,
+	PRIMARY KEY (plugin_id, collection, record_key)
 )
+;
+CREATE INDEX IF NOT EXISTS idx_plugin_records_plugin_collection_key
+ON plugin_records(plugin_id, collection, record_key)
 `)
 	return err
 }

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"kizuna/internal/memory"
+	"kizuna/internal/runtimecfg"
 	"kizuna/pkg/pluginapi"
 )
 
@@ -223,6 +224,179 @@ func TestRegisterHostHandlersSupportsMemoryReadWrite(t *testing.T) {
 	}
 	if len(snapshot.Messages) != 1 || snapshot.Messages[0].Content != "assistant memory" {
 		t.Fatalf("expected trimmed memory messages, got %#v", snapshot.Messages)
+	}
+}
+
+func TestRegisterHostHandlersSupportsPersonaAPI(t *testing.T) {
+	runtimeStore, err := runtimecfg.Open(filepath.Join(t.TempDir(), "runtime.json"))
+	if err != nil {
+		t.Fatalf("open runtime store: %v", err)
+	}
+	t.Cleanup(func() { _ = runtimeStore.Close() })
+
+	manager, err := NewManager(Config{
+		PluginsDir:   filepath.Join(t.TempDir(), "plugins"),
+		RuntimeStore: runtimeStore,
+	})
+	if err != nil {
+		t.Fatalf("new manager: %v", err)
+	}
+	t.Cleanup(func() { _ = manager.Close() })
+
+	plugin := InstalledPlugin{
+		ID:       "persona_demo",
+		Name:     "Persona Demo",
+		Version:  "v0.1.0",
+		Manifest: pluginapi.Manifest{ID: "persona_demo", Name: "Persona Demo", Version: "v0.1.0"},
+		Enabled:  true,
+		GrantedCaps: []pluginapi.Capability{
+			pluginapi.CapabilityPersonaRead,
+			pluginapi.CapabilityPersonaWrite,
+		},
+	}
+	if err := manager.registry.Upsert(plugin); err != nil {
+		t.Fatalf("upsert plugin: %v", err)
+	}
+
+	hostSession, pluginSession, cleanup := newRPCSessionPair(t)
+	defer cleanup()
+	manager.registerHostHandlers(&managedPlugin{install: plugin, session: hostSession})
+
+	scope := pluginapi.PersonaScope{
+		Type:      pluginapi.PersonaScopeThread,
+		GuildID:   "guild-1",
+		ChannelID: "channel-1",
+		ThreadID:  "thread-1",
+	}
+	if err := pluginSession.Call(context.Background(), pluginapi.MethodHostPersonaUpsert, pluginapi.PersonaUpsertRequest{
+		Scope:  scope,
+		Name:   "auto",
+		Prompt: "you are the scoped persona",
+		Origin: "test",
+	}, nil); err != nil {
+		t.Fatalf("persona upsert: %v", err)
+	}
+	if err := pluginSession.Call(context.Background(), pluginapi.MethodHostPersonaActivate, pluginapi.PersonaActivateRequest{
+		Scope: scope,
+		Name:  "auto",
+	}, nil); err != nil {
+		t.Fatalf("persona activate: %v", err)
+	}
+
+	var list pluginapi.PersonaListResponse
+	if err := pluginSession.Call(context.Background(), pluginapi.MethodHostPersonaList, pluginapi.PersonaListRequest{
+		Scope: scope,
+	}, &list); err != nil {
+		t.Fatalf("persona list: %v", err)
+	}
+	if list.Active != "auto" || len(list.Personas) != 1 || list.Personas[0].Prompt != "you are the scoped persona" {
+		t.Fatalf("unexpected persona list response: %#v", list)
+	}
+
+	var active pluginapi.PersonaGetActiveResponse
+	if err := pluginSession.Call(context.Background(), pluginapi.MethodHostPersonaGetActive, pluginapi.PersonaGetActiveRequest{
+		Scope: scope,
+	}, &active); err != nil {
+		t.Fatalf("persona get active: %v", err)
+	}
+	if !active.Found || active.Persona.Name != "auto" {
+		t.Fatalf("unexpected active persona response: %#v", active)
+	}
+
+	if err := pluginSession.Call(context.Background(), pluginapi.MethodHostPersonaDelete, pluginapi.PersonaDeleteRequest{
+		Scope: scope,
+		Name:  "auto",
+	}, nil); err != nil {
+		t.Fatalf("persona delete: %v", err)
+	}
+	if err := pluginSession.Call(context.Background(), pluginapi.MethodHostPersonaGetActive, pluginapi.PersonaGetActiveRequest{
+		Scope: scope,
+	}, &active); err != nil {
+		t.Fatalf("persona get active after delete: %v", err)
+	}
+	if active.Found {
+		t.Fatalf("expected active persona to be cleared after delete: %#v", active)
+	}
+}
+
+func TestRegisterHostHandlersSupportsRecordsAPI(t *testing.T) {
+	manager, err := NewManager(Config{PluginsDir: filepath.Join(t.TempDir(), "plugins")})
+	if err != nil {
+		t.Fatalf("new manager: %v", err)
+	}
+	t.Cleanup(func() { _ = manager.Close() })
+
+	plugin := InstalledPlugin{
+		ID:       "records_demo",
+		Name:     "Records Demo",
+		Version:  "v0.1.0",
+		Manifest: pluginapi.Manifest{ID: "records_demo", Name: "Records Demo", Version: "v0.1.0"},
+		Enabled:  true,
+		GrantedCaps: []pluginapi.Capability{
+			pluginapi.CapabilityPluginRecordsRead,
+			pluginapi.CapabilityPluginRecordsWrite,
+		},
+	}
+	if err := manager.registry.Upsert(plugin); err != nil {
+		t.Fatalf("upsert plugin: %v", err)
+	}
+
+	hostSession, pluginSession, cleanup := newRPCSessionPair(t)
+	defer cleanup()
+	manager.registerHostHandlers(&managedPlugin{install: plugin, session: hostSession})
+
+	if err := pluginSession.Call(context.Background(), pluginapi.MethodHostRecordsPut, pluginapi.RecordsPutRequest{
+		Collection: "state",
+		Key:        "scope:a",
+		Value:      json.RawMessage(`{"count":1}`),
+	}, nil); err != nil {
+		t.Fatalf("records put first: %v", err)
+	}
+	if err := pluginSession.Call(context.Background(), pluginapi.MethodHostRecordsPut, pluginapi.RecordsPutRequest{
+		Collection: "state",
+		Key:        "scope:b",
+		Value:      json.RawMessage(`{"count":2}`),
+	}, nil); err != nil {
+		t.Fatalf("records put second: %v", err)
+	}
+
+	var get pluginapi.RecordsGetResponse
+	if err := pluginSession.Call(context.Background(), pluginapi.MethodHostRecordsGet, pluginapi.RecordsGetRequest{
+		Collection: "state",
+		Key:        "scope:a",
+	}, &get); err != nil {
+		t.Fatalf("records get: %v", err)
+	}
+	if !get.Found || string(get.Value) != `{"count":1}` || get.UpdatedAt == "" {
+		t.Fatalf("unexpected records get response: %#v", get)
+	}
+
+	var list pluginapi.RecordsListResponse
+	if err := pluginSession.Call(context.Background(), pluginapi.MethodHostRecordsList, pluginapi.RecordsListRequest{
+		Collection: "state",
+		Prefix:     "scope:",
+		Limit:      10,
+	}, &list); err != nil {
+		t.Fatalf("records list: %v", err)
+	}
+	if len(list.Items) != 2 || list.Items[0].Key != "scope:a" || list.Items[1].Key != "scope:b" {
+		t.Fatalf("unexpected records list response: %#v", list)
+	}
+
+	if err := pluginSession.Call(context.Background(), pluginapi.MethodHostRecordsDelete, pluginapi.RecordsDeleteRequest{
+		Collection: "state",
+		Key:        "scope:a",
+	}, nil); err != nil {
+		t.Fatalf("records delete: %v", err)
+	}
+	if err := pluginSession.Call(context.Background(), pluginapi.MethodHostRecordsList, pluginapi.RecordsListRequest{
+		Collection: "state",
+		Limit:      10,
+	}, &list); err != nil {
+		t.Fatalf("records list after delete: %v", err)
+	}
+	if len(list.Items) != 1 || list.Items[0].Key != "scope:b" {
+		t.Fatalf("unexpected records list after delete: %#v", list)
 	}
 }
 

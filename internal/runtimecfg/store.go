@@ -160,6 +160,9 @@ func (s *Store) loadOrCreate() error {
 		return err
 	} else if ok {
 		s.data = loaded
+		if err := s.migrateLegacyPersonasLocked(); err != nil {
+			return err
+		}
 		return s.loadConfiguredAdminsLocked()
 	}
 
@@ -167,6 +170,9 @@ func (s *Store) loadOrCreate() error {
 		return err
 	} else if ok {
 		s.data = loaded
+		if err := s.migrateLegacyPersonasLocked(); err != nil {
+			return err
+		}
 		if err := s.persistLocked(); err != nil {
 			return err
 		}
@@ -174,6 +180,9 @@ func (s *Store) loadOrCreate() error {
 	}
 
 	s.data = defaultData()
+	if err := s.migrateLegacyPersonasLocked(); err != nil {
+		return err
+	}
 	if err := s.persistLocked(); err != nil {
 		return err
 	}
@@ -181,10 +190,14 @@ func (s *Store) loadOrCreate() error {
 }
 
 func (s *Store) ComposePrompts(baseSystemPrompt string) (string, string) {
-	return s.ComposePromptsForGuild(baseSystemPrompt, "")
+	return s.ComposePromptsForLocation(baseSystemPrompt, "", "", "")
 }
 
 func (s *Store) ComposePromptsForGuild(baseSystemPrompt, guildID string) (string, string) {
+	return s.ComposePromptsForLocation(baseSystemPrompt, guildID, "", "")
+}
+
+func (s *Store) ComposePromptsForLocation(baseSystemPrompt, guildID, channelID, threadID string) (string, string) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -201,7 +214,9 @@ func (s *Store) ComposePromptsForGuild(baseSystemPrompt, guildID string) (string
 	}
 
 	var personaPrompt string
-	if active := strings.TrimSpace(s.data.ActivePersona); active != "" {
+	if active, ok, err := s.resolveActivePersonaLocked(PersonaScopeForLocation(guildID, channelID, threadID)); err == nil && ok {
+		personaPrompt = strings.TrimSpace(active.Prompt)
+	} else if active := strings.TrimSpace(s.data.ActivePersona); active != "" {
 		personaPrompt = strings.TrimSpace(s.data.Personas[active])
 	}
 
@@ -348,92 +363,47 @@ func (s *Store) RevokeAdmin(userID string) error {
 }
 
 func (s *Store) UpsertPersona(name, prompt string) error {
-	name = normalizeName(name)
-	prompt = strings.TrimSpace(prompt)
-	if name == "" {
-		return errors.New("人设名称不能为空")
-	}
-	if prompt == "" {
-		return errors.New("人设 Prompt 不能为空")
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.data.Personas == nil {
-		s.data.Personas = map[string]string{}
-	}
-	s.data.Personas[name] = prompt
-	return s.persistLocked()
+	return s.UpsertScopedPersona(GlobalPersonaScope(), name, prompt, "legacy")
 }
 
 func (s *Store) DeletePersona(name string) error {
-	name = normalizeName(name)
-	if name == "" {
-		return errors.New("人设名称不能为空")
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if _, ok := s.data.Personas[name]; !ok {
-		return errors.New("人设不存在")
-	}
-	delete(s.data.Personas, name)
-	if s.data.ActivePersona == name {
-		s.data.ActivePersona = ""
-	}
-	return s.persistLocked()
+	return s.DeleteScopedPersona(GlobalPersonaScope(), name)
 }
 
 func (s *Store) PersonaPrompt(name string) (string, bool) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	prompt, ok := s.data.Personas[normalizeName(name)]
-	return prompt, ok
+	persona, ok, err := s.ScopedPersona(GlobalPersonaScope(), name)
+	if err != nil || !ok {
+		return "", false
+	}
+	return persona.Prompt, true
 }
 
 func (s *Store) PersonaNames() []string {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	names := make([]string, 0, len(s.data.Personas))
-	for name := range s.data.Personas {
-		names = append(names, name)
+	personas, _, err := s.ListScopedPersonas(GlobalPersonaScope())
+	if err != nil {
+		return nil
 	}
-	sort.Strings(names)
+	names := make([]string, 0, len(personas))
+	for _, persona := range personas {
+		names = append(names, persona.Name)
+	}
 	return names
 }
 
 func (s *Store) ActivePersonaName() string {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.data.ActivePersona
+	persona, ok, err := s.ActiveScopedPersona(GlobalPersonaScope())
+	if err != nil || !ok {
+		return ""
+	}
+	return persona.Name
 }
 
 func (s *Store) SetActivePersona(name string) error {
-	name = normalizeName(name)
-	if name == "" {
-		return errors.New("人设名称不能为空")
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if _, ok := s.data.Personas[name]; !ok {
-		return errors.New("人设不存在")
-	}
-	s.data.ActivePersona = name
-	return s.persistLocked()
+	return s.ActivateScopedPersona(GlobalPersonaScope(), name)
 }
 
 func (s *Store) ClearActivePersona() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	s.data.ActivePersona = ""
-	return s.persistLocked()
+	return s.ClearScopedPersonaActive(GlobalPersonaScope())
 }
 
 func (s *Store) SystemPrompt() string {
@@ -668,6 +638,18 @@ func (s *Store) ensureSchemaLocked() error {
 CREATE TABLE IF NOT EXISTS runtime_state (
 	id INTEGER PRIMARY KEY CHECK (id = 1),
 	payload_json TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS scoped_personas (
+	scope_key TEXT NOT NULL,
+	name TEXT NOT NULL,
+	prompt TEXT NOT NULL,
+	origin TEXT NOT NULL DEFAULT '',
+	updated_at TEXT NOT NULL DEFAULT '',
+	PRIMARY KEY (scope_key, name)
+);
+CREATE TABLE IF NOT EXISTS scoped_persona_active (
+	scope_key TEXT PRIMARY KEY,
+	name TEXT NOT NULL DEFAULT ''
 )
 `)
 	return err

@@ -15,8 +15,10 @@ const (
 	MethodPluginOnComponent           = "plugin.on_component"
 	MethodPluginOnModal               = "plugin.on_modal"
 	MethodPluginOnMessage             = "plugin.on_message"
+	MethodPluginOnContextBuild        = "plugin.on_context_build"
 	MethodPluginOnPromptBuild         = "plugin.on_prompt_build"
 	MethodPluginOnResponsePostprocess = "plugin.on_response_postprocess"
+	MethodPluginOnReplyCommitted      = "plugin.on_reply_committed"
 	MethodPluginOnInterval            = "plugin.on_interval"
 
 	MethodHostStorageGet       = "host.storage.get"
@@ -25,6 +27,16 @@ const (
 	MethodHostStorageList      = "host.storage.list"
 	MethodHostConfigGet        = "host.config.get"
 	MethodHostConfigSet        = "host.config.set"
+	MethodHostPersonaList      = "host.persona.list"
+	MethodHostPersonaGetActive = "host.persona.get_active"
+	MethodHostPersonaUpsert    = "host.persona.upsert"
+	MethodHostPersonaDelete    = "host.persona.delete"
+	MethodHostPersonaActivate  = "host.persona.activate"
+	MethodHostPersonaClear     = "host.persona.clear_active"
+	MethodHostRecordsGet       = "host.records.get"
+	MethodHostRecordsPut       = "host.records.put"
+	MethodHostRecordsDelete    = "host.records.delete"
+	MethodHostRecordsList      = "host.records.list"
 	MethodHostMemoryGet        = "host.memory.get"
 	MethodHostMemorySearch     = "host.memory.search"
 	MethodHostMemoryAppend     = "host.memory.append"
@@ -50,8 +62,10 @@ type Plugin interface {
 	OnComponent(ctx context.Context, host *HostClient, req ComponentRequest) (*InteractionResponse, error)
 	OnModal(ctx context.Context, host *HostClient, req ModalRequest) (*InteractionResponse, error)
 	OnMessage(ctx context.Context, host *HostClient, req MessageEvent) error
+	OnContextBuild(ctx context.Context, host *HostClient, req ContextBuildRequest) (*ContextBuildResponse, error)
 	OnPromptBuild(ctx context.Context, host *HostClient, req PromptBuildRequest) (*PromptBuildResponse, error)
 	OnResponsePostprocess(ctx context.Context, host *HostClient, req ResponsePostprocessRequest) (*ResponsePostprocessResponse, error)
+	OnReplyCommitted(ctx context.Context, host *HostClient, req ReplyCommittedRequest) error
 	OnInterval(ctx context.Context, host *HostClient, req IntervalRequest) error
 }
 
@@ -81,6 +95,10 @@ func (BasePlugin) OnMessage(context.Context, *HostClient, MessageEvent) error {
 	return nil
 }
 
+func (BasePlugin) OnContextBuild(context.Context, *HostClient, ContextBuildRequest) (*ContextBuildResponse, error) {
+	return nil, nil
+}
+
 func (BasePlugin) OnPromptBuild(context.Context, *HostClient, PromptBuildRequest) (*PromptBuildResponse, error) {
 	return nil, nil
 }
@@ -89,12 +107,23 @@ func (BasePlugin) OnResponsePostprocess(context.Context, *HostClient, ResponsePo
 	return nil, nil
 }
 
+func (BasePlugin) OnReplyCommitted(context.Context, *HostClient, ReplyCommittedRequest) error {
+	return nil
+}
+
 func (BasePlugin) OnInterval(context.Context, *HostClient, IntervalRequest) error {
 	return nil
 }
 
 type HostClient struct {
 	session *RPCSession
+}
+
+func NewHostClient(session *RPCSession) *HostClient {
+	if session == nil {
+		return nil
+	}
+	return &HostClient{session: session}
 }
 
 func (c *HostClient) StorageGet(ctx context.Context, key string, target any) (bool, error) {
@@ -145,6 +174,85 @@ func (c *HostClient) ConfigSet(ctx context.Context, value any) error {
 		return err
 	}
 	return c.session.Call(ctx, MethodHostConfigSet, ConfigSetRequest{Value: payload}, nil)
+}
+
+func (c *HostClient) PersonaList(ctx context.Context, scope PersonaScope) (*PersonaListResponse, error) {
+	var response PersonaListResponse
+	if err := c.session.Call(ctx, MethodHostPersonaList, PersonaListRequest{Scope: scope}, &response); err != nil {
+		return nil, err
+	}
+	return &response, nil
+}
+
+func (c *HostClient) PersonaGetActive(ctx context.Context, scope PersonaScope) (*PersonaGetActiveResponse, error) {
+	var response PersonaGetActiveResponse
+	if err := c.session.Call(ctx, MethodHostPersonaGetActive, PersonaGetActiveRequest{Scope: scope}, &response); err != nil {
+		return nil, err
+	}
+	return &response, nil
+}
+
+func (c *HostClient) PersonaUpsert(ctx context.Context, request PersonaUpsertRequest) error {
+	return c.session.Call(ctx, MethodHostPersonaUpsert, request, nil)
+}
+
+func (c *HostClient) PersonaDelete(ctx context.Context, scope PersonaScope, name string) error {
+	return c.session.Call(ctx, MethodHostPersonaDelete, PersonaDeleteRequest{
+		Scope: scope,
+		Name:  name,
+	}, nil)
+}
+
+func (c *HostClient) PersonaActivate(ctx context.Context, scope PersonaScope, name string) error {
+	return c.session.Call(ctx, MethodHostPersonaActivate, PersonaActivateRequest{
+		Scope: scope,
+		Name:  name,
+	}, nil)
+}
+
+func (c *HostClient) PersonaClearActive(ctx context.Context, scope PersonaScope) error {
+	return c.session.Call(ctx, MethodHostPersonaClear, PersonaClearActiveRequest{Scope: scope}, nil)
+}
+
+func (c *HostClient) RecordsGet(ctx context.Context, collection, key string, target any) (bool, string, error) {
+	var response RecordsGetResponse
+	if err := c.session.Call(ctx, MethodHostRecordsGet, RecordsGetRequest{
+		Collection: collection,
+		Key:        key,
+	}, &response); err != nil {
+		return false, "", err
+	}
+	if !response.Found || len(response.Value) == 0 || target == nil {
+		return response.Found, response.UpdatedAt, nil
+	}
+	return true, response.UpdatedAt, json.Unmarshal(response.Value, target)
+}
+
+func (c *HostClient) RecordsPut(ctx context.Context, collection, key string, value any) error {
+	payload, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+	return c.session.Call(ctx, MethodHostRecordsPut, RecordsPutRequest{
+		Collection: collection,
+		Key:        key,
+		Value:      payload,
+	}, nil)
+}
+
+func (c *HostClient) RecordsDelete(ctx context.Context, collection, key string) error {
+	return c.session.Call(ctx, MethodHostRecordsDelete, RecordsDeleteRequest{
+		Collection: collection,
+		Key:        key,
+	}, nil)
+}
+
+func (c *HostClient) RecordsList(ctx context.Context, request RecordsListRequest) (*RecordsListResponse, error) {
+	var response RecordsListResponse
+	if err := c.session.Call(ctx, MethodHostRecordsList, request, &response); err != nil {
+		return nil, err
+	}
+	return &response, nil
 }
 
 func (c *HostClient) MemoryGet(ctx context.Context, channelID string) (*MemoryGetResponse, error) {
@@ -323,6 +431,13 @@ func Serve(manifest Manifest, plugin Plugin) error {
 		}
 		return struct{}{}, plugin.OnMessage(ctx, host, request)
 	})
+	session.RegisterHandler(MethodPluginOnContextBuild, func(ctx context.Context, params json.RawMessage) (any, error) {
+		var request ContextBuildRequest
+		if err := json.Unmarshal(params, &request); err != nil {
+			return nil, err
+		}
+		return plugin.OnContextBuild(ctx, host, request)
+	})
 	session.RegisterHandler(MethodPluginOnPromptBuild, func(ctx context.Context, params json.RawMessage) (any, error) {
 		var request PromptBuildRequest
 		if err := json.Unmarshal(params, &request); err != nil {
@@ -336,6 +451,13 @@ func Serve(manifest Manifest, plugin Plugin) error {
 			return nil, err
 		}
 		return plugin.OnResponsePostprocess(ctx, host, request)
+	})
+	session.RegisterHandler(MethodPluginOnReplyCommitted, func(ctx context.Context, params json.RawMessage) (any, error) {
+		var request ReplyCommittedRequest
+		if err := json.Unmarshal(params, &request); err != nil {
+			return nil, err
+		}
+		return struct{}{}, plugin.OnReplyCommitted(ctx, host, request)
 	})
 	session.RegisterHandler(MethodPluginOnInterval, func(ctx context.Context, params json.RawMessage) (any, error) {
 		var request IntervalRequest

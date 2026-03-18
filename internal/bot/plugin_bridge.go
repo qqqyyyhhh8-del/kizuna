@@ -11,9 +11,17 @@ import (
 )
 
 func pluginMessageContextFromRecord(record memory.MessageRecord) pluginapi.MessageContext {
+	return pluginMessageContextFromRecordAtLocation(record, speechLocation{})
+}
+
+func pluginMessageContextFromRecordAtLocation(record memory.MessageRecord, location speechLocation) pluginapi.MessageContext {
 	context := pluginapi.MessageContext{
 		Guild: pluginapi.GuildInfo{
-			ID: strings.TrimSpace(record.GuildID),
+			ID: strings.TrimSpace(firstNonEmpty(location.GuildID, record.GuildID)),
+		},
+		Channel: pluginapi.ChannelInfo{
+			ID:       strings.TrimSpace(location.ChannelID),
+			ThreadID: strings.TrimSpace(location.ThreadID),
 		},
 		Content: strings.TrimSpace(record.Content),
 		Time:    record.Time.Format(time.RFC3339),
@@ -155,6 +163,63 @@ func pluginMessageEventFromDiscord(s *discordgo.Session, m *discordgo.MessageCre
 		}
 	}
 	return event
+}
+
+func pluginMessageContextFromDiscordMessage(s *discordgo.Session, message *discordgo.Message, guildID string) pluginapi.MessageContext {
+	if message == nil {
+		return pluginapi.MessageContext{}
+	}
+
+	location := speechLocationForChannel(s, guildID, message.ChannelID)
+	channelName := ""
+	threadName := ""
+	if channel := resolveDiscordChannel(s, message.ChannelID); channel != nil {
+		channelName = strings.TrimSpace(channel.Name)
+		if channel.IsThread() {
+			threadName = strings.TrimSpace(channel.Name)
+		}
+	}
+
+	context := pluginapi.MessageContext{
+		MessageID: strings.TrimSpace(message.ID),
+		Guild: pluginapi.GuildInfo{
+			ID:   strings.TrimSpace(firstNonEmpty(location.GuildID, guildID)),
+			Name: guildNameFromSession(s, firstNonEmpty(location.GuildID, guildID)),
+		},
+		Channel: pluginapi.ChannelInfo{
+			ID:         strings.TrimSpace(location.ChannelID),
+			Name:       channelName,
+			ThreadID:   strings.TrimSpace(location.ThreadID),
+			ThreadName: threadName,
+		},
+		Content: strings.TrimSpace(message.Content),
+		Time:    message.Timestamp.Format(time.RFC3339),
+		Author:  pluginUserInfoFromAuthor(authorFromDiscord(message.Author, message.Member)),
+	}
+	if reply := replyRecordFromDiscord(message.ReferencedMessage, botUserIDFromSession(s)); reply != nil {
+		context.ReplyTo = &pluginapi.ReplyInfo{
+			MessageID: strings.TrimSpace(reply.MessageID),
+			Role:      strings.TrimSpace(reply.Role),
+			Content:   strings.TrimSpace(reply.Content),
+			Time:      reply.Time.Format(time.RFC3339),
+			Author:    pluginUserInfoFromAuthor(reply.Author),
+		}
+	}
+	visuals := collectVisualReferences(message, message.Content)
+	if len(visuals) > 0 {
+		context.Images = make([]pluginapi.ImageReference, 0, len(visuals))
+		for _, image := range visuals {
+			context.Images = append(context.Images, pluginapi.ImageReference{
+				Kind:        strings.TrimSpace(image.Kind),
+				Name:        strings.TrimSpace(image.Name),
+				EmojiID:     strings.TrimSpace(image.EmojiID),
+				URL:         strings.TrimSpace(image.URL),
+				Animated:    image.Animated,
+				ContentType: strings.TrimSpace(image.ContentType),
+			})
+		}
+	}
+	return context
 }
 
 func pluginUserInfoFromAuthor(author memory.MessageAuthor) pluginapi.UserInfo {

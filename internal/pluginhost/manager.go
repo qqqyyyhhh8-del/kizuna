@@ -345,6 +345,35 @@ func (m *Manager) DispatchMessage(ctx context.Context, event pluginapi.MessageEv
 	}
 }
 
+func (m *Manager) BuildConversationContext(ctx context.Context, request pluginapi.ContextBuildRequest) (*pluginapi.ContextBuildResponse, error) {
+	plugin, ok, err := m.activeContextProvider(request.CurrentMessage.Guild.ID)
+	if err != nil || !ok {
+		return nil, err
+	}
+
+	process, err := m.ensurePluginRunning(plugin.ID)
+	if err != nil {
+		return nil, err
+	}
+
+	request.PluginID = plugin.ID
+	request.CurrentMessage.Author = m.enrichUserInfo(request.CurrentMessage.Author)
+
+	callCtx, cancel := context.WithTimeout(ctx, pluginCallTimeout)
+	defer cancel()
+
+	var response *pluginapi.ContextBuildResponse
+	if err := process.session.Call(callCtx, pluginapi.MethodPluginOnContextBuild, request, &response); isMethodNotFound(err) {
+		return nil, nil
+	} else if err != nil {
+		return nil, err
+	}
+	if response == nil || !response.Override {
+		return nil, nil
+	}
+	return response, nil
+}
+
 func (m *Manager) BuildPromptBlocks(ctx context.Context, request pluginapi.PromptBuildRequest) ([]pluginapi.PromptBlock, error) {
 	var blocks []pluginapi.PromptBlock
 	for _, plugin := range m.registry.List() {
@@ -373,6 +402,32 @@ func (m *Manager) BuildPromptBlocks(ctx context.Context, request pluginapi.Promp
 		blocks = append(blocks, response.Blocks...)
 	}
 	return blocks, nil
+}
+
+func (m *Manager) DispatchReplyCommitted(ctx context.Context, request pluginapi.ReplyCommittedRequest) {
+	for _, plugin := range m.registry.List() {
+		if !plugin.Enabled || !m.registry.AllowsGuild(plugin, request.TriggerMessage.Guild.ID) {
+			continue
+		}
+		process, err := m.ensurePluginRunning(plugin.ID)
+		if err != nil {
+			log.Printf("plugin reply committed start failed: plugin=%s err=%v", plugin.ID, err)
+			continue
+		}
+
+		callRequest := request
+		callRequest.PluginID = plugin.ID
+		callRequest.TriggerMessage.Author = m.enrichUserInfo(callRequest.TriggerMessage.Author)
+		callRequest.ReplyMessage.Author = m.enrichUserInfo(callRequest.ReplyMessage.Author)
+
+		callCtx, cancel := context.WithTimeout(ctx, pluginCallTimeout)
+		err = process.session.Call(callCtx, pluginapi.MethodPluginOnReplyCommitted, callRequest, nil)
+		cancel()
+		if isMethodNotFound(err) || err == nil {
+			continue
+		}
+		log.Printf("plugin reply committed failed: plugin=%s err=%v", plugin.ID, err)
+	}
 }
 
 func (m *Manager) PostprocessResponse(ctx context.Context, request pluginapi.ResponsePostprocessRequest) (string, error) {
@@ -674,6 +729,194 @@ func (m *Manager) registerHostHandlers(process *managedPlugin) {
 		}
 		return struct{}{}, m.registry.ConfigSet(process.install.ID, request.Value)
 	})
+	process.session.RegisterHandler(pluginapi.MethodHostPersonaList, func(ctx context.Context, params json.RawMessage) (any, error) {
+		if err := m.requireCapability(process.install, pluginapi.CapabilityPersonaRead); err != nil {
+			return nil, err
+		}
+		if m.runtimeStore == nil {
+			return nil, errors.New("runtime store is unavailable")
+		}
+		var request pluginapi.PersonaListRequest
+		if err := json.Unmarshal(params, &request); err != nil {
+			return nil, err
+		}
+		scope, err := runtimePersonaScopeFromPlugin(request.Scope)
+		if err != nil {
+			return nil, err
+		}
+		personas, active, err := m.runtimeStore.ListScopedPersonas(scope)
+		if err != nil {
+			return nil, err
+		}
+		response := pluginapi.PersonaListResponse{
+			Active:   strings.TrimSpace(active),
+			Personas: make([]pluginapi.PersonaEntry, 0, len(personas)),
+		}
+		for _, persona := range personas {
+			response.Personas = append(response.Personas, pluginapi.PersonaEntry{
+				Name:      strings.TrimSpace(persona.Name),
+				Prompt:    strings.TrimSpace(persona.Prompt),
+				Origin:    strings.TrimSpace(persona.Origin),
+				UpdatedAt: strings.TrimSpace(persona.UpdatedAt),
+			})
+		}
+		return response, nil
+	})
+	process.session.RegisterHandler(pluginapi.MethodHostPersonaGetActive, func(ctx context.Context, params json.RawMessage) (any, error) {
+		if err := m.requireCapability(process.install, pluginapi.CapabilityPersonaRead); err != nil {
+			return nil, err
+		}
+		if m.runtimeStore == nil {
+			return nil, errors.New("runtime store is unavailable")
+		}
+		var request pluginapi.PersonaGetActiveRequest
+		if err := json.Unmarshal(params, &request); err != nil {
+			return nil, err
+		}
+		scope, err := runtimePersonaScopeFromPlugin(request.Scope)
+		if err != nil {
+			return nil, err
+		}
+		persona, ok, err := m.runtimeStore.ActiveScopedPersona(scope)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			return pluginapi.PersonaGetActiveResponse{Found: false}, nil
+		}
+		return pluginapi.PersonaGetActiveResponse{
+			Found: true,
+			Persona: pluginapi.PersonaEntry{
+				Name:      strings.TrimSpace(persona.Name),
+				Prompt:    strings.TrimSpace(persona.Prompt),
+				Origin:    strings.TrimSpace(persona.Origin),
+				UpdatedAt: strings.TrimSpace(persona.UpdatedAt),
+			},
+		}, nil
+	})
+	process.session.RegisterHandler(pluginapi.MethodHostPersonaUpsert, func(ctx context.Context, params json.RawMessage) (any, error) {
+		if err := m.requireCapability(process.install, pluginapi.CapabilityPersonaWrite); err != nil {
+			return nil, err
+		}
+		if m.runtimeStore == nil {
+			return nil, errors.New("runtime store is unavailable")
+		}
+		var request pluginapi.PersonaUpsertRequest
+		if err := json.Unmarshal(params, &request); err != nil {
+			return nil, err
+		}
+		scope, err := runtimePersonaScopeFromPlugin(request.Scope)
+		if err != nil {
+			return nil, err
+		}
+		return struct{}{}, m.runtimeStore.UpsertScopedPersona(scope, request.Name, request.Prompt, firstNonEmpty(strings.TrimSpace(request.Origin), "plugin:"+process.install.ID))
+	})
+	process.session.RegisterHandler(pluginapi.MethodHostPersonaDelete, func(ctx context.Context, params json.RawMessage) (any, error) {
+		if err := m.requireCapability(process.install, pluginapi.CapabilityPersonaWrite); err != nil {
+			return nil, err
+		}
+		if m.runtimeStore == nil {
+			return nil, errors.New("runtime store is unavailable")
+		}
+		var request pluginapi.PersonaDeleteRequest
+		if err := json.Unmarshal(params, &request); err != nil {
+			return nil, err
+		}
+		scope, err := runtimePersonaScopeFromPlugin(request.Scope)
+		if err != nil {
+			return nil, err
+		}
+		return struct{}{}, m.runtimeStore.DeleteScopedPersona(scope, request.Name)
+	})
+	process.session.RegisterHandler(pluginapi.MethodHostPersonaActivate, func(ctx context.Context, params json.RawMessage) (any, error) {
+		if err := m.requireCapability(process.install, pluginapi.CapabilityPersonaWrite); err != nil {
+			return nil, err
+		}
+		if m.runtimeStore == nil {
+			return nil, errors.New("runtime store is unavailable")
+		}
+		var request pluginapi.PersonaActivateRequest
+		if err := json.Unmarshal(params, &request); err != nil {
+			return nil, err
+		}
+		scope, err := runtimePersonaScopeFromPlugin(request.Scope)
+		if err != nil {
+			return nil, err
+		}
+		return struct{}{}, m.runtimeStore.ActivateScopedPersona(scope, request.Name)
+	})
+	process.session.RegisterHandler(pluginapi.MethodHostPersonaClear, func(ctx context.Context, params json.RawMessage) (any, error) {
+		if err := m.requireCapability(process.install, pluginapi.CapabilityPersonaWrite); err != nil {
+			return nil, err
+		}
+		if m.runtimeStore == nil {
+			return nil, errors.New("runtime store is unavailable")
+		}
+		var request pluginapi.PersonaClearActiveRequest
+		if err := json.Unmarshal(params, &request); err != nil {
+			return nil, err
+		}
+		scope, err := runtimePersonaScopeFromPlugin(request.Scope)
+		if err != nil {
+			return nil, err
+		}
+		return struct{}{}, m.runtimeStore.ClearScopedPersonaActive(scope)
+	})
+	process.session.RegisterHandler(pluginapi.MethodHostRecordsGet, func(ctx context.Context, params json.RawMessage) (any, error) {
+		if err := m.requireCapability(process.install, pluginapi.CapabilityPluginRecordsRead); err != nil {
+			return nil, err
+		}
+		var request pluginapi.RecordsGetRequest
+		if err := json.Unmarshal(params, &request); err != nil {
+			return nil, err
+		}
+		value, updatedAt, found, err := m.registry.RecordsGet(process.install.ID, request.Collection, request.Key)
+		if err != nil {
+			return nil, err
+		}
+		return pluginapi.RecordsGetResponse{
+			Found:     found,
+			Value:     value,
+			UpdatedAt: updatedAt,
+		}, nil
+	})
+	process.session.RegisterHandler(pluginapi.MethodHostRecordsPut, func(ctx context.Context, params json.RawMessage) (any, error) {
+		if err := m.requireCapability(process.install, pluginapi.CapabilityPluginRecordsWrite); err != nil {
+			return nil, err
+		}
+		var request pluginapi.RecordsPutRequest
+		if err := json.Unmarshal(params, &request); err != nil {
+			return nil, err
+		}
+		return struct{}{}, m.registry.RecordsPut(process.install.ID, request.Collection, request.Key, request.Value)
+	})
+	process.session.RegisterHandler(pluginapi.MethodHostRecordsDelete, func(ctx context.Context, params json.RawMessage) (any, error) {
+		if err := m.requireCapability(process.install, pluginapi.CapabilityPluginRecordsWrite); err != nil {
+			return nil, err
+		}
+		var request pluginapi.RecordsDeleteRequest
+		if err := json.Unmarshal(params, &request); err != nil {
+			return nil, err
+		}
+		return struct{}{}, m.registry.RecordsDelete(process.install.ID, request.Collection, request.Key)
+	})
+	process.session.RegisterHandler(pluginapi.MethodHostRecordsList, func(ctx context.Context, params json.RawMessage) (any, error) {
+		if err := m.requireCapability(process.install, pluginapi.CapabilityPluginRecordsRead); err != nil {
+			return nil, err
+		}
+		var request pluginapi.RecordsListRequest
+		if err := json.Unmarshal(params, &request); err != nil {
+			return nil, err
+		}
+		items, nextCursor, err := m.registry.RecordsList(process.install.ID, request)
+		if err != nil {
+			return nil, err
+		}
+		return pluginapi.RecordsListResponse{
+			Items:      items,
+			NextCursor: nextCursor,
+		}, nil
+	})
 	process.session.RegisterHandler(pluginapi.MethodHostMemoryGet, func(ctx context.Context, params json.RawMessage) (any, error) {
 		if err := m.requireCapability(process.install, pluginapi.CapabilityMemoryRead); err != nil {
 			return nil, err
@@ -953,12 +1196,57 @@ func (m *Manager) enrichUserInfo(user pluginapi.UserInfo) pluginapi.UserInfo {
 }
 
 func (m *Manager) requireCapability(plugin InstalledPlugin, capability pluginapi.Capability) error {
-	for _, item := range plugin.GrantedCaps {
-		if item == capability {
-			return nil
-		}
+	if m.hasCapability(plugin, capability) {
+		return nil
 	}
 	return fmt.Errorf("plugin %s lacks capability %s", plugin.ID, capability)
+}
+
+func (m *Manager) hasCapability(plugin InstalledPlugin, capability pluginapi.Capability) bool {
+	for _, item := range plugin.GrantedCaps {
+		if item == capability {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *Manager) activeContextProvider(guildID string) (InstalledPlugin, bool, error) {
+	var provider InstalledPlugin
+	found := false
+	for _, plugin := range m.registry.List() {
+		if !plugin.Enabled || !m.registry.AllowsGuild(plugin, guildID) {
+			continue
+		}
+		if !m.hasCapability(plugin, pluginapi.CapabilityContextProvide) {
+			continue
+		}
+		if found {
+			return InstalledPlugin{}, false, fmt.Errorf("multiple context providers are enabled for guild %s: %s and %s", strings.TrimSpace(guildID), provider.ID, plugin.ID)
+		}
+		provider = plugin
+		found = true
+	}
+	return provider, found, nil
+}
+
+func runtimePersonaScopeFromPlugin(scope pluginapi.PersonaScope) (runtimecfg.PersonaScope, error) {
+	if strings.TrimSpace(scope.Type) == "" &&
+		strings.TrimSpace(scope.GuildID) == "" &&
+		strings.TrimSpace(scope.ChannelID) == "" &&
+		strings.TrimSpace(scope.ThreadID) == "" {
+		return runtimecfg.GlobalPersonaScope(), nil
+	}
+	converted := runtimecfg.NormalizePersonaScope(runtimecfg.PersonaScope{
+		Type:      strings.TrimSpace(scope.Type),
+		GuildID:   strings.TrimSpace(scope.GuildID),
+		ChannelID: strings.TrimSpace(scope.ChannelID),
+		ThreadID:  strings.TrimSpace(scope.ThreadID),
+	})
+	if converted.Type == "" {
+		return runtimecfg.PersonaScope{}, errors.New("invalid persona scope")
+	}
+	return converted, nil
 }
 
 func (m *Manager) findPluginByCommand(commandName string) (InstalledPlugin, pluginapi.CommandSpec, bool) {

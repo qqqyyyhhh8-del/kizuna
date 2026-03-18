@@ -33,8 +33,15 @@ func (m *Manager) InstallFromGit(ctx context.Context, repo, ref, sourcePath stri
 	}
 	finalDir := m.registry.RepoDirectory(manifest.ID)
 	if _, err := os.Stat(finalDir); err == nil {
+		// Clean up orphaned checkouts left behind by failed installs or older
+		// registry migrations before moving the freshly cloned repository in.
+		if err := os.RemoveAll(finalDir); err != nil {
+			_ = os.RemoveAll(repoDir)
+			return InstalledPlugin{}, fmt.Errorf("remove stale plugin directory %s: %w", finalDir, err)
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
 		_ = os.RemoveAll(repoDir)
-		return InstalledPlugin{}, fmt.Errorf("plugin directory already exists: %s", finalDir)
+		return InstalledPlugin{}, err
 	}
 	if err := os.MkdirAll(filepath.Dir(finalDir), 0o755); err != nil {
 		_ = os.RemoveAll(repoDir)

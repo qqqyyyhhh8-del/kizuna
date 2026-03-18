@@ -174,7 +174,7 @@
 - 宿主当前支持：slash 命令、按钮/Modal 前缀路由、消息事件、prompt 注入、回复后处理、定时任务、插件私有存储、受控宿主能力调用。
 - 官方样例插件在 `examples/plugins/style-note`。
 - 安装当前仓库内的样例插件：
-  在 `/plugin` 面板点击 `安装`，填写 `repo=https://github.com/qqqyyyhhh8-del/discord-.git`，`path=examples/plugins/style-note`
+  在 `/plugin` 面板点击 `安装`，填写 `repo=https://github.com/qqqyyyhhh8-del/kizuna.git`，`path=examples/plugins/style-note`
 
 ## 许可证
 

@@ -174,7 +174,7 @@ If `BOT_CONFIG_FILE` does not exist, the host creates a template automatically:
 - The current host supports slash commands, button/modal prefix routing, message hooks, prompt injection, response postprocessing, interval hooks, plugin-private storage, and capability-checked host calls.
 - An official example plugin is available in `examples/plugins/style-note`.
 - To install the sample plugin from this repository, open the `/plugin` panel and fill:
-  `repo=https://github.com/qqqyyyhhh8-del/discord-.git`, `path=examples/plugins/style-note`
+  `repo=https://github.com/qqqyyyhhh8-del/kizuna.git`, `path=examples/plugins/style-note`
 
 ## License
 

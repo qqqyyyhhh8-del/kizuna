@@ -1,6 +1,6 @@
 # 插件编写指南
 
-[返回 README](README.md) | [English](PLUGIN_GUIDE.en.md)
+[返回 README](../README.md) | [English](PLUGIN_GUIDE.en.md)
 
 本项目的插件是“独立进程 + JSON-RPC over stdio”模式。宿主负责拉起插件进程、路由 Slash/按钮/Modal/消息事件，并按 `plugin.json` 中声明的能力开放宿主接口。
 
@@ -54,7 +54,7 @@ your-plugin/
 - `component_prefixes`：如果你要处理按钮或 Modal，必须声明此前缀，且你的 `custom_id` 要以该前缀开头。
 - `interval_seconds`：如果要定时任务，设置触发间隔秒数。
 
-字段定义和校验逻辑见 [pkg/pluginapi/types.go](pkg/pluginapi/types.go)。
+字段定义和校验逻辑见 [../pkg/pluginapi/types.go](../pkg/pluginapi/types.go)。
 
 ## 第二步：写 `main.go`
 
@@ -115,7 +115,7 @@ func main() {
 
 ## 第四步：使用宿主能力
 
-`HostClient` 已经封装了常用宿主调用，定义见 [pkg/pluginapi/sdk.go](pkg/pluginapi/sdk.go)。
+`HostClient` 已经封装了常用宿主调用，定义见 [../pkg/pluginapi/sdk.go](../pkg/pluginapi/sdk.go)。
 
 常用能力对照：
 
@@ -145,11 +145,11 @@ func main() {
 
 ## 示例插件导航
 
-- 示例 manifest：[examples/plugins/style-note/plugin.json](examples/plugins/style-note/plugin.json)
-- 示例主程序：[examples/plugins/style-note/cmd/style-note-plugin/main.go](examples/plugins/style-note/cmd/style-note-plugin/main.go)
-- Manifest / 类型定义：[pkg/pluginapi/types.go](pkg/pluginapi/types.go)
-- SDK / HostClient：[pkg/pluginapi/sdk.go](pkg/pluginapi/sdk.go)
-- Manifest 读取入口：[pkg/pluginapi/manifest.go](pkg/pluginapi/manifest.go)
+- 示例 manifest：[../examples/plugins/style-note/plugin.json](../examples/plugins/style-note/plugin.json)
+- 示例主程序：[../examples/plugins/style-note/cmd/style-note-plugin/main.go](../examples/plugins/style-note/cmd/style-note-plugin/main.go)
+- Manifest / 类型定义：[../pkg/pluginapi/types.go](../pkg/pluginapi/types.go)
+- SDK / HostClient：[../pkg/pluginapi/sdk.go](../pkg/pluginapi/sdk.go)
+- Manifest 读取入口：[../pkg/pluginapi/manifest.go](../pkg/pluginapi/manifest.go)
 
 `style-note` 这个示例演示了三件事：
 

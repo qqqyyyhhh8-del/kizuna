@@ -20,10 +20,10 @@ RUN apt-get update \
 
 COPY --from=build /out/kizuna /usr/local/bin/kizuna
 
-ENV BOT_SQLITE_PATH=/data/bot.db
-ENV BOT_CONFIG_FILE=/data/bot_config.json
-ENV PLUGINS_DIR=/data/plugins
+ENV BOT_CONFIG_FILE=/app/config/bot_config.json
+ENV BOT_SQLITE_PATH=/app/var/bot.db
+ENV PLUGINS_DIR=/app/var/plugins
 
-VOLUME ["/data"]
+VOLUME ["/app/config", "/app/var"]
 
 CMD ["kizuna"]

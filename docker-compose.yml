@@ -9,8 +9,9 @@ services:
     env_file:
       - .env
     environment:
-      BOT_SQLITE_PATH: /data/bot.db
-      BOT_CONFIG_FILE: /data/bot_config.json
-      PLUGINS_DIR: /data/plugins
+      BOT_SQLITE_PATH: /app/var/bot.db
+      BOT_CONFIG_FILE: /app/config/bot_config.json
+      PLUGINS_DIR: /app/var/plugins
     volumes:
-      - ./data:/data
+      - ./config:/app/config
+      - ./var:/app/var

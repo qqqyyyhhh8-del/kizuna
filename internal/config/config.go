@@ -14,9 +14,9 @@ const (
 	defaultBaseURL        = "https://api.openai.com/v1"
 	defaultChatModel      = "gpt-4o-mini"
 	defaultEmbedModel     = "text-embedding-3-small"
-	defaultConfigFilePath = "bot_config.json"
-	defaultSQLitePath     = "bot.db"
-	defaultPluginsDir     = "plugins"
+	defaultConfigFilePath = "config/bot_config.json"
+	defaultSQLitePath     = "var/bot.db"
+	defaultPluginsDir     = "var/plugins"
 )
 
 type OpenAIConfig struct {

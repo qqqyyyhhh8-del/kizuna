@@ -52,7 +52,7 @@ Important fields:
 - `component_prefixes`: required when handling buttons or modals
 - `interval_seconds`: enables periodic `OnInterval` callbacks
 
-See [pkg/pluginapi/types.go](pkg/pluginapi/types.go) for the exact schema.
+See [../pkg/pluginapi/types.go](../pkg/pluginapi/types.go) for the exact schema.
 
 ## 2. Write `main.go`
 
@@ -107,7 +107,7 @@ If you handle components, declare `component_prefixes` in `plugin.json` and keep
 
 ## 4. Use Host Capabilities
 
-`HostClient` lives in [pkg/pluginapi/sdk.go](pkg/pluginapi/sdk.go).
+`HostClient` lives in [../pkg/pluginapi/sdk.go](../pkg/pluginapi/sdk.go).
 
 Common mappings:
 
@@ -133,10 +133,10 @@ The host refreshes slash commands after installation.
 
 ## Example Navigation
 
-- Example manifest: [examples/plugins/style-note/plugin.json](examples/plugins/style-note/plugin.json)
-- Example main: [examples/plugins/style-note/cmd/style-note-plugin/main.go](examples/plugins/style-note/cmd/style-note-plugin/main.go)
-- Manifest and types: [pkg/pluginapi/types.go](pkg/pluginapi/types.go)
-- SDK and `HostClient`: [pkg/pluginapi/sdk.go](pkg/pluginapi/sdk.go)
-- Manifest loader: [pkg/pluginapi/manifest.go](pkg/pluginapi/manifest.go)
+- Example manifest: [../examples/plugins/style-note/plugin.json](../examples/plugins/style-note/plugin.json)
+- Example main: [../examples/plugins/style-note/cmd/style-note-plugin/main.go](../examples/plugins/style-note/cmd/style-note-plugin/main.go)
+- Manifest and types: [../pkg/pluginapi/types.go](../pkg/pluginapi/types.go)
+- SDK and `HostClient`: [../pkg/pluginapi/sdk.go](../pkg/pluginapi/sdk.go)
+- Manifest loader: [../pkg/pluginapi/manifest.go](../pkg/pluginapi/manifest.go)
 
 The `style-note` sample shows slash commands, plugin-private storage, and `OnPromptBuild` injection.

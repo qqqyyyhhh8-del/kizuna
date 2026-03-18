@@ -1,8 +1,8 @@
 # Kizuna
 
-[简体中文](README.md) | [English](README.en.md) | [Plugin Guide](PLUGIN_GUIDE.en.md)
+[简体中文](../README.md) | [English](README.en.md) | [Plugin Guide](PLUGIN_GUIDE.en.md) | [Changelog](CHANGELOG.md)
 
-Current version: `v0.6.1`  
+Current version: `v0.6.2`  
 See [CHANGELOG.md](CHANGELOG.md) for release notes.
 
 This is a Discord bot built with Go + Discordgo. It includes:
@@ -50,10 +50,10 @@ After installation, the host will register `/persona`, `/proactive`, and `/emoji
 | `OPENAI_RERANK_MODEL` | Rerank model. Leave empty to disable rerank |
 | `OPENAI_HTTP_TIMEOUT_SECONDS` | Optional HTTP client timeout for OpenAI-compatible endpoints. If empty, the outer context timeout is used |
 | `SYSTEM_PROMPT` | Optional base system prompt |
-| `BOT_SQLITE_PATH` | Primary SQLite database path (default: `bot.db`) for runtime config, plugin registry/storage, chat memory, summaries, and sqlite-vec retrieval data |
-| `BOT_CONFIG_FILE` | Legacy/bootstrap config file path (default: `bot_config.json`). Older fields are imported into SQLite on first start, and `super_admin_ids` are still read from this file |
+| `BOT_SQLITE_PATH` | Primary SQLite database path (default: `var/bot.db`) for runtime config, plugin registry/storage, chat memory, summaries, and sqlite-vec retrieval data |
+| `BOT_CONFIG_FILE` | Legacy/bootstrap config file path (default: `config/bot_config.json`). Older fields are imported into SQLite on first start, and `super_admin_ids` are still read from this file |
 | `BOT_COMMAND_GUILD_ID` | Optional guild ID for slash command registration. If empty, commands are global |
-| `PLUGINS_DIR` | Plugin host working directory (default: `plugins`) containing installed source trees, repo caches, and temp files |
+| `PLUGINS_DIR` | Plugin host working directory (default: `var/plugins`) containing installed source trees, repo caches, and temp files |
 
 ## Quick Start
 1. Clone the repo and enter the directory:
@@ -73,8 +73,13 @@ After installation, the host will register `/persona`, `/proactive`, and `/emoji
 
 The bot loads `.env` from the current directory automatically. Existing shell environment variables take precedence over `.env`.
 
+By default:
+- docs live under `docs/`
+- bootstrap admin config lives at `config/bot_config.json`
+- the database and plugin runtime directory live under `var/`
+
 ## Docker Deployment
-The repository now includes [Dockerfile](Dockerfile) and [docker-compose.yml](docker-compose.yml).
+The repository now includes [Dockerfile](../Dockerfile) and [docker-compose.yml](../docker-compose.yml).
 
 1. Copy the env template:
    ```bash
@@ -83,8 +88,8 @@ The repository now includes [Dockerfile](Dockerfile) and [docker-compose.yml](do
 2. Edit `.env` and fill in the required values such as `DISCORD_TOKEN` and `OPENAI_API_KEY`.
 3. Prepare the bootstrap admin config:
    ```bash
-   mkdir -p data
-   cat > data/bot_config.json <<'EOF'
+   mkdir -p config var
+   cat > config/bot_config.json <<'EOF'
    {
      "super_admin_ids": ["your_discord_user_id"],
      "admin_ids": []
@@ -97,14 +102,14 @@ The repository now includes [Dockerfile](Dockerfile) and [docker-compose.yml](do
    ```
 
 Notes:
-- The container defaults to `/data/bot.db`, `/data/bot_config.json`, and `/data/plugins`.
-- `./data` is mounted into `/data` so the SQLite database, bootstrap config, and plugin directories survive restarts.
-- If you are migrating an older instance into Docker, copy the old `bot_config.json` to `data/bot_config.json` and the old `plugins/registry.json` to `data/plugins/registry.json` before first start so the host can import them automatically.
+- The container defaults to `/app/var/bot.db`, `/app/config/bot_config.json`, and `/app/var/plugins`.
+- `./config` and `./var` are mounted into `/app/config` and `/app/var` so the bootstrap config, SQLite database, and plugin directories survive restarts.
+- If you are migrating an older instance into Docker, copy the old `bot_config.json` to `config/bot_config.json` and the old `plugins/registry.json` to `var/plugins/registry.json` before first start so the host can import them automatically.
 - The bot does not need any exposed HTTP ports.
 - The image keeps both `git` and `go` because plugin install/upgrade uses Git and the current official plugins run with `go run`.
 
 ## Storage And Legacy Import
-Runtime data is now persisted in the SQLite database pointed to by `BOT_SQLITE_PATH` (default: `bot.db`), including:
+Runtime data is now persisted in the SQLite database pointed to by `BOT_SQLITE_PATH` (default: `var/bot.db`), including:
 - channel history, summaries, and sqlite-vec retrieval vectors
 - extra system prompt, speaking scopes, worldbook entries, and guild emoji analysis results
 - plugin registry and plugin-private storage
@@ -165,10 +170,10 @@ If `BOT_CONFIG_FILE` does not exist, the host creates a template automatically:
 
 - Plugin guide: [PLUGIN_GUIDE.en.md](PLUGIN_GUIDE.en.md)
 - Example navigation:
-  [examples/plugins/style-note/plugin.json](examples/plugins/style-note/plugin.json) ·
-  [examples/plugins/style-note/cmd/style-note-plugin/main.go](examples/plugins/style-note/cmd/style-note-plugin/main.go) ·
-  [pkg/pluginapi/types.go](pkg/pluginapi/types.go) ·
-  [pkg/pluginapi/sdk.go](pkg/pluginapi/sdk.go)
+  [examples/plugins/style-note/plugin.json](../examples/plugins/style-note/plugin.json) ·
+  [examples/plugins/style-note/cmd/style-note-plugin/main.go](../examples/plugins/style-note/cmd/style-note-plugin/main.go) ·
+  [pkg/pluginapi/types.go](../pkg/pluginapi/types.go) ·
+  [pkg/pluginapi/sdk.go](../pkg/pluginapi/sdk.go)
 - The shared protocol and Go SDK live in `pkg/pluginapi`.
 - Every plugin must provide a `plugin.json` manifest.
 - The current host supports slash commands, button/modal prefix routing, message hooks, prompt injection, response postprocessing, interval hooks, plugin-private storage, and capability-checked host calls.
@@ -178,4 +183,4 @@ If `BOT_CONFIG_FILE` does not exist, the host creates a template automatically:
 
 ## License
 
-This project is licensed under the [MIT License](LICENSE).
+This project is licensed under the [MIT License](LICENSE.md).

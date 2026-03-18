@@ -1,9 +1,9 @@
 # Kizuna
 
-[简体中文](README.md) | [English](README.en.md) | [插件编写指南](PLUGIN_GUIDE.md)
+[简体中文](README.md) | [English](docs/README.en.md) | [插件编写指南](docs/PLUGIN_GUIDE.md) | [更新记录](docs/CHANGELOG.md)
 
-当前版本：`v0.6.1`  
-更新记录见 [CHANGELOG.md](CHANGELOG.md)
+当前版本：`v0.6.2`  
+更新记录见 [docs/CHANGELOG.md](docs/CHANGELOG.md)
 
 这是一个基于 Go + Discordgo 的聊天机器人示例，具备：
 - 基础对话能力（调用 OpenAI 格式兼容接口）
@@ -50,10 +50,10 @@
 | `OPENAI_RERANK_MODEL` | rerank 模型；为空则关闭 rerank |
 | `OPENAI_HTTP_TIMEOUT_SECONDS` | 可选，给 OpenAI 兼容接口设置 HTTP 客户端超时秒数；不填则主要依赖外层 context 超时 |
 | `SYSTEM_PROMPT` | 系统提示词（可选） |
-| `BOT_SQLITE_PATH` | 主 SQLite 数据库路径（默认 `bot.db`）；运行时配置、插件注册/存储、聊天记忆、摘要和 sqlite-vec 检索索引都保存在这里 |
-| `BOT_CONFIG_FILE` | 兼容导入/管理员引导配置文件（默认 `bot_config.json`）；旧版字段会在首次启动时迁移到 SQLite，`super_admin_ids` 仍从这里读取 |
+| `BOT_SQLITE_PATH` | 主 SQLite 数据库路径（默认 `var/bot.db`）；运行时配置、插件注册/存储、聊天记忆、摘要和 sqlite-vec 检索索引都保存在这里 |
+| `BOT_CONFIG_FILE` | 兼容导入/管理员引导配置文件（默认 `config/bot_config.json`）；旧版字段会在首次启动时迁移到 SQLite，`super_admin_ids` 仍从这里读取 |
 | `BOT_COMMAND_GUILD_ID` | 可选，slash 命令注册到指定 guild；不填则注册为全局命令 |
-| `PLUGINS_DIR` | 插件宿主工作目录（默认 `plugins`），其中会保存已安装插件源码、仓库缓存和临时目录 |
+| `PLUGINS_DIR` | 插件宿主工作目录（默认 `var/plugins`），其中会保存已安装插件源码、仓库缓存和临时目录 |
 
 ## 快速开始
 1. 拉取仓库并进入目录：
@@ -73,6 +73,11 @@
 
 程序启动时会自动读取当前目录下的 `.env`。如果你已经在系统环境里设置了同名变量，系统环境优先。
 
+默认情况下：
+- 文档放在 `docs/`
+- 管理员引导配置放在 `config/bot_config.json`
+- 数据库和插件运行目录放在 `var/`
+
 ## Docker 部署
 仓库已提供 [Dockerfile](Dockerfile) 和 [docker-compose.yml](docker-compose.yml)。
 
@@ -83,8 +88,8 @@
 2. 编辑 `.env`，至少填好 `DISCORD_TOKEN`、`OPENAI_API_KEY` 等必需项。
 3. 准备管理员引导配置文件：
    ```bash
-   mkdir -p data
-   cat > data/bot_config.json <<'EOF'
+   mkdir -p config var
+   cat > config/bot_config.json <<'EOF'
    {
      "super_admin_ids": ["你的Discord用户ID"],
      "admin_ids": []
@@ -97,14 +102,14 @@
    ```
 
 说明：
-- 容器内默认使用 `/data/bot.db`、`/data/bot_config.json`、`/data/plugins`。
-- `./data` 会挂载到容器内 `/data`，用于长期保存 SQLite 数据库、管理员引导配置和插件目录。
-- 如果你是从旧目录迁移到 Docker，请把旧的 `bot_config.json` 放到 `data/bot_config.json`，把旧的 `plugins/registry.json` 放到 `data/plugins/registry.json`，首次启动会自动导入。
+- 容器内默认使用 `/app/var/bot.db`、`/app/config/bot_config.json`、`/app/var/plugins`。
+- `./config` 和 `./var` 会分别挂载到容器内 `/app/config`、`/app/var`，用于长期保存管理员引导配置、SQLite 数据库和插件目录。
+- 如果你是从旧目录迁移到 Docker，请把旧的 `bot_config.json` 放到 `config/bot_config.json`，把旧的 `plugins/registry.json` 放到 `var/plugins/registry.json`，首次启动会自动导入。
 - 机器人不需要暴露 HTTP 端口。
 - 由于插件安装/升级依赖 `git`，插件运行默认使用 `go run`，镜像里已保留 `git` 和 `go`。
 
 ## 存储与兼容导入
-运行时数据现在默认持久化到 `BOT_SQLITE_PATH` 指向的 SQLite 数据库（默认 `bot.db`），包括：
+运行时数据现在默认持久化到 `BOT_SQLITE_PATH` 指向的 SQLite 数据库（默认 `var/bot.db`），包括：
 - 频道上下文、摘要、sqlite-vec 检索向量
 - 额外 system prompt、允许发言范围、世界书、服务器表情分析结果
 - 插件注册表、插件私有存储
@@ -163,7 +168,7 @@
 
 ## 插件开发
 
-- 插件编写指南：[PLUGIN_GUIDE.md](PLUGIN_GUIDE.md)
+- 插件编写指南：[docs/PLUGIN_GUIDE.md](docs/PLUGIN_GUIDE.md)
 - 示例插件导航：
   [examples/plugins/style-note/plugin.json](examples/plugins/style-note/plugin.json) ·
   [examples/plugins/style-note/cmd/style-note-plugin/main.go](examples/plugins/style-note/cmd/style-note-plugin/main.go) ·
@@ -178,4 +183,4 @@
 
 ## 许可证
 
-本项目使用 [MIT License](LICENSE)。
+本项目使用 [MIT License](docs/LICENSE.md)。

@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## v0.6.2 - 2026-03-18
+
+### Changed
+
+- Moved auxiliary documentation and the license text into `docs/` so the repository root stays focused on source entry points.
+- Moved default bootstrap/runtime paths to `config/` and `var/`, and aligned Docker defaults with `/app/config` and `/app/var`.
+- Refreshed the Chinese and English READMEs plus plugin authoring guides so the new directory layout and relative links stay valid.
+
 ## v0.6.1 - 2026-03-18
 
 ### Added

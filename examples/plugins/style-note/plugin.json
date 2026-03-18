@@ -1,0 +1,37 @@
+{
+  "id": "style_note",
+  "name": "Style Note Plugin",
+  "version": "v0.1.0",
+  "description": "Stores an extra style note and injects it into the prompt pipeline.",
+  "min_host_version": "v0.4.0",
+  "runtime": {
+    "command": "go",
+    "args": ["run", "./cmd/style-note-plugin"]
+  },
+  "capabilities": [
+    "plugin.storage",
+    "discord.interaction.respond"
+  ],
+  "commands": [
+    {
+      "name": "style-note-set",
+      "description": "Set the extra style note for prompt injection.",
+      "options": [
+        {
+          "type": "string",
+          "name": "note",
+          "description": "The note content to inject before the model call.",
+          "required": true
+        }
+      ]
+    },
+    {
+      "name": "style-note-show",
+      "description": "Show the currently stored style note."
+    },
+    {
+      "name": "style-note-clear",
+      "description": "Clear the currently stored style note."
+    }
+  ]
+}

@@ -1,6 +1,12 @@
 .env
-bot_config.json
 /discordbot
 /kizuna
-data/
-plugins/
+/bot.db
+/bot.db-shm
+/bot.db-wal
+/bot_config.json
+/plugins/
+/config/*
+!/config/.gitkeep
+/var/*
+!/var/.gitkeep

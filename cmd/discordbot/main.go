@@ -15,6 +15,7 @@ import (
 	"discordbot/internal/openai"
 	"discordbot/internal/pluginhost"
 	"discordbot/internal/runtimecfg"
+	sqlitestorage "discordbot/internal/storage/sqlite"
 )
 
 func main() {
@@ -24,8 +25,17 @@ func main() {
 	}
 
 	openAI := openai.NewClient(cfg.OpenAI)
-	store := memory.NewStore(openAI.Embed)
-	runtimeStore, err := runtimecfg.Open(cfg.Bot.ConfigFilePath)
+	db, err := sqlitestorage.Open(cfg.Bot.SQLitePath)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer db.Close()
+
+	store, err := memory.NewStoreWithDB(openAI.Embed, db)
+	if err != nil {
+		log.Fatal(err)
+	}
+	runtimeStore, err := runtimecfg.OpenWithDB(db, cfg.Bot.ConfigFilePath)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -37,6 +47,7 @@ func main() {
 	handler := bot.NewHandler(cfg.Bot, openAI.Chat, openAI.Embed, rerankFn, store, runtimeStore)
 	pluginManager, err := pluginhost.NewManager(pluginhost.Config{
 		PluginsDir:                cfg.Bot.PluginsDir,
+		DB:                        db,
 		HostVersion:               buildinfo.Version,
 		RuntimeStore:              runtimeStore,
 		ChatFn:                    openAI.Chat,

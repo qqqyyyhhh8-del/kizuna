@@ -2,6 +2,7 @@ package pluginhost
 
 import (
 	"bytes"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"strings"
 	"sync"
 
+	sqlitestorage "discordbot/internal/storage/sqlite"
 	"discordbot/pkg/pluginapi"
 )
 
@@ -47,10 +49,12 @@ type InstalledPlugin struct {
 }
 
 type Registry struct {
-	mu   sync.RWMutex
-	dir  string
-	path string
-	data RegistryData
+	mu         sync.RWMutex
+	dir        string
+	data       RegistryData
+	db         *sql.DB
+	legacyPath string
+	ownsDB     bool
 }
 
 func OpenRegistry(dir string) (*Registry, error) {
@@ -65,9 +69,42 @@ func OpenRegistry(dir string) (*Registry, error) {
 		return nil, err
 	}
 
+	db, err := sqlitestorage.Open(filepath.Join(dir, "registry.db"))
+	if err != nil {
+		return nil, err
+	}
 	registry := &Registry{
-		dir:  dir,
-		path: filepath.Join(dir, registryFileName),
+		dir:        dir,
+		db:         db,
+		legacyPath: filepath.Join(dir, registryFileName),
+		ownsDB:     true,
+	}
+	if err := registry.loadOrCreate(); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	return registry, nil
+}
+
+func OpenRegistryWithDB(db *sql.DB, dir string) (*Registry, error) {
+	dir = strings.TrimSpace(dir)
+	if dir == "" {
+		return nil, errors.New("plugins directory is required")
+	}
+	if db == nil {
+		return nil, errors.New("sqlite db is required")
+	}
+	if err := os.MkdirAll(filepath.Join(dir, reposDirName), 0o755); err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(filepath.Join(dir, tmpDirName), 0o755); err != nil {
+		return nil, err
+	}
+
+	registry := &Registry{
+		dir:        dir,
+		db:         db,
+		legacyPath: filepath.Join(dir, registryFileName),
 	}
 	if err := registry.loadOrCreate(); err != nil {
 		return nil, err
@@ -79,25 +116,26 @@ func (r *Registry) loadOrCreate() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	data, err := os.ReadFile(r.path)
-	if errors.Is(err, os.ErrNotExist) {
-		r.data = defaultRegistryData()
-		return r.persistLocked()
-	}
-	if err != nil {
+	if err := r.ensureSchemaLocked(); err != nil {
 		return err
 	}
-	if len(bytes.TrimSpace(data)) == 0 {
-		r.data = defaultRegistryData()
+
+	if loaded, ok, err := r.loadFromSQLiteLocked(); err != nil {
+		return err
+	} else if ok {
+		r.data = loaded
+		return nil
+	}
+
+	if loaded, ok, err := loadLegacyRegistry(r.legacyPath); err != nil {
+		return err
+	} else if ok {
+		r.data = loaded
 		return r.persistLocked()
 	}
-	var parsed RegistryData
-	if err := json.Unmarshal(data, &parsed); err != nil {
-		return err
-	}
-	normalizeRegistryData(&parsed)
-	r.data = parsed
-	return nil
+
+	r.data = defaultRegistryData()
+	return r.persistLocked()
 }
 
 func (r *Registry) Dir() string {
@@ -299,12 +337,77 @@ func (r *Registry) persistLocked() error {
 		r.data.Plugins = map[string]InstalledPlugin{}
 	}
 	normalizeRegistryData(&r.data)
-	payload, err := json.MarshalIndent(r.data, "", "  ")
+	if err := r.ensureSchemaLocked(); err != nil {
+		return err
+	}
+	payload, err := json.Marshal(r.data)
 	if err != nil {
 		return err
 	}
-	payload = append(payload, '\n')
-	return os.WriteFile(r.path, payload, 0o644)
+	_, err = r.db.Exec(`
+INSERT INTO plugin_registry_state (id, payload_json)
+VALUES (1, ?)
+ON CONFLICT(id) DO UPDATE SET payload_json = excluded.payload_json
+`, string(payload))
+	return err
+}
+
+func (r *Registry) Close() error {
+	if r == nil || !r.ownsDB || r.db == nil {
+		return nil
+	}
+	return r.db.Close()
+}
+
+func (r *Registry) ensureSchemaLocked() error {
+	if r == nil || r.db == nil {
+		return errors.New("sqlite db is not initialized")
+	}
+	_, err := r.db.Exec(`
+CREATE TABLE IF NOT EXISTS plugin_registry_state (
+	id INTEGER PRIMARY KEY CHECK (id = 1),
+	payload_json TEXT NOT NULL
+)
+`)
+	return err
+}
+
+func (r *Registry) loadFromSQLiteLocked() (RegistryData, bool, error) {
+	var payload string
+	err := r.db.QueryRow(`SELECT payload_json FROM plugin_registry_state WHERE id = 1`).Scan(&payload)
+	if errors.Is(err, sql.ErrNoRows) {
+		return RegistryData{}, false, nil
+	}
+	if err != nil {
+		return RegistryData{}, false, err
+	}
+
+	var parsed RegistryData
+	if err := json.Unmarshal([]byte(payload), &parsed); err != nil {
+		return RegistryData{}, false, err
+	}
+	normalizeRegistryData(&parsed)
+	return parsed, true, nil
+}
+
+func loadLegacyRegistry(path string) (RegistryData, bool, error) {
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return RegistryData{}, false, nil
+	}
+	if err != nil {
+		return RegistryData{}, false, err
+	}
+	if len(bytes.TrimSpace(data)) == 0 {
+		return RegistryData{}, false, nil
+	}
+
+	var parsed RegistryData
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		return RegistryData{}, false, err
+	}
+	normalizeRegistryData(&parsed)
+	return parsed, true, nil
 }
 
 func defaultRegistryData() RegistryData {

@@ -15,6 +15,7 @@ const (
 	defaultChatModel      = "gpt-4o-mini"
 	defaultEmbedModel     = "text-embedding-3-small"
 	defaultConfigFilePath = "bot_config.json"
+	defaultSQLitePath     = "bot.db"
 	defaultPluginsDir     = "plugins"
 )
 
@@ -35,6 +36,7 @@ type BotConfig struct {
 	DiscordToken   string
 	SystemPrompt   string
 	ConfigFilePath string
+	SQLitePath     string
 	CommandGuildID string
 	PluginsDir     string
 }
@@ -99,6 +101,10 @@ func Load() (Config, error) {
 	if configFilePath == "" {
 		configFilePath = defaultConfigFilePath
 	}
+	sqlitePath := strings.TrimSpace(os.Getenv("BOT_SQLITE_PATH"))
+	if sqlitePath == "" {
+		sqlitePath = defaultSQLitePath
+	}
 	commandGuildID := strings.TrimSpace(os.Getenv("BOT_COMMAND_GUILD_ID"))
 	pluginsDir := strings.TrimSpace(os.Getenv("PLUGINS_DIR"))
 	if pluginsDir == "" {
@@ -121,6 +127,7 @@ func Load() (Config, error) {
 			DiscordToken:   discordToken,
 			SystemPrompt:   systemPrompt,
 			ConfigFilePath: configFilePath,
+			SQLitePath:     sqlitePath,
 			CommandGuildID: commandGuildID,
 			PluginsDir:     pluginsDir,
 		},

@@ -2,6 +2,7 @@ package runtimecfg
 
 import (
 	"bytes"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +11,8 @@ import (
 	"sort"
 	"strings"
 	"sync"
+
+	sqlitestorage "discordbot/internal/storage/sqlite"
 )
 
 type Data struct {
@@ -98,9 +101,14 @@ func (ids *flexibleIDs) UnmarshalJSON(data []byte) error {
 }
 
 type Store struct {
-	mu   sync.RWMutex
-	path string
-	data Data
+	mu         sync.RWMutex
+	db         *sql.DB
+	data       Data
+	legacyPath string
+	ownsDB     bool
+
+	configuredSuperAdminIDs []string
+	configuredAdminIDs      []string
 }
 
 func Open(path string) (*Store, error) {
@@ -109,7 +117,31 @@ func Open(path string) (*Store, error) {
 		return nil, errors.New("config file path is required")
 	}
 
-	store := &Store{path: path}
+	db, err := sqlitestorage.Open(defaultDBPathForLegacy(path))
+	if err != nil {
+		return nil, err
+	}
+	store := &Store{
+		db:         db,
+		legacyPath: path,
+		ownsDB:     true,
+	}
+	if err := store.loadOrCreate(); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	return store, nil
+}
+
+func OpenWithDB(db *sql.DB, legacyPath string) (*Store, error) {
+	if db == nil {
+		return nil, errors.New("sqlite db is required")
+	}
+
+	store := &Store{
+		db:         db,
+		legacyPath: strings.TrimSpace(legacyPath),
+	}
 	if err := store.loadOrCreate(); err != nil {
 		return nil, err
 	}
@@ -120,56 +152,32 @@ func (s *Store) loadOrCreate() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	data, err := os.ReadFile(s.path)
-	if errors.Is(err, os.ErrNotExist) {
-		s.data = defaultData()
-		return s.persistLocked()
-	}
-	if err != nil {
+	if err := s.ensureSchemaLocked(); err != nil {
 		return err
 	}
 
-	if strings.TrimSpace(string(data)) == "" {
-		s.data = defaultData()
-		return s.persistLocked()
+	if loaded, ok, err := s.loadFromSQLiteLocked(); err != nil {
+		return err
+	} else if ok {
+		s.data = loaded
+		return s.loadConfiguredAdminsLocked()
 	}
 
-	var parsed struct {
-		SuperAdminIDs      flexibleIDs                  `json:"super_admin_ids"`
-		AdminIDs           flexibleIDs                  `json:"admin_ids"`
-		Personas           map[string]string            `json:"personas"`
-		ActivePersona      string                       `json:"active_persona"`
-		SystemPrompt       string                       `json:"system_prompt"`
-		SpeechMode         string                       `json:"speech_mode"`
-		AllowedGuildIDs    flexibleIDs                  `json:"allowed_guild_ids"`
-		AllowedChannelIDs  flexibleIDs                  `json:"allowed_channel_ids"`
-		AllowedThreadIDs   flexibleIDs                  `json:"allowed_thread_ids"`
-		ProactiveReply     bool                         `json:"proactive_reply"`
-		ProactiveChance    float64                      `json:"proactive_chance"`
-		WorldBookEntries   map[string]WorldBookEntry    `json:"worldbook_entries"`
-		GuildEmojiProfiles map[string]GuildEmojiProfile `json:"guild_emoji_profiles"`
+	if loaded, ok, err := loadLegacyData(s.legacyPath); err != nil {
+		return err
+	} else if ok {
+		s.data = loaded
+		if err := s.persistLocked(); err != nil {
+			return err
+		}
+		return s.loadConfiguredAdminsLocked()
 	}
-	if err := json.Unmarshal(data, &parsed); err != nil {
+
+	s.data = defaultData()
+	if err := s.persistLocked(); err != nil {
 		return err
 	}
-	loaded := Data{
-		SuperAdminIDs:      []string(parsed.SuperAdminIDs),
-		AdminIDs:           []string(parsed.AdminIDs),
-		Personas:           parsed.Personas,
-		ActivePersona:      parsed.ActivePersona,
-		SystemPrompt:       parsed.SystemPrompt,
-		SpeechMode:         parsed.SpeechMode,
-		AllowedGuildIDs:    []string(parsed.AllowedGuildIDs),
-		AllowedChannelIDs:  []string(parsed.AllowedChannelIDs),
-		AllowedThreadIDs:   []string(parsed.AllowedThreadIDs),
-		ProactiveReply:     parsed.ProactiveReply,
-		ProactiveChance:    parsed.ProactiveChance,
-		WorldBookEntries:   parsed.WorldBookEntries,
-		GuildEmojiProfiles: parsed.GuildEmojiProfiles,
-	}
-	normalizeData(&loaded)
-	s.data = loaded
-	return nil
+	return s.loadConfiguredAdminsLocked()
 }
 
 func (s *Store) ComposePrompts(baseSystemPrompt string) (string, string) {
@@ -270,22 +278,35 @@ func (s *Store) UpsertGuildEmojiProfile(profile GuildEmojiProfile) error {
 func (s *Store) IsSuperAdmin(userID string) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return containsString(s.data.SuperAdminIDs, normalizeID(userID))
+	userID = normalizeID(userID)
+	return containsString(s.configuredSuperAdminIDs, userID) || containsString(s.data.SuperAdminIDs, userID)
 }
 
 func (s *Store) IsAdmin(userID string) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	userID = normalizeID(userID)
-	return containsString(s.data.SuperAdminIDs, userID) || containsString(s.data.AdminIDs, userID)
+	return containsString(s.configuredSuperAdminIDs, userID) ||
+		containsString(s.configuredAdminIDs, userID) ||
+		containsString(s.data.SuperAdminIDs, userID) ||
+		containsString(s.data.AdminIDs, userID)
 }
 
 func (s *Store) AdminLists() ([]string, []string) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	superAdmins := append([]string(nil), s.data.SuperAdminIDs...)
-	admins := append([]string(nil), s.data.AdminIDs...)
+	superAdmins := normalizeIDs(append(append([]string(nil), s.configuredSuperAdminIDs...), s.data.SuperAdminIDs...))
+	admins := normalizeIDs(append(append([]string(nil), s.configuredAdminIDs...), s.data.AdminIDs...))
+	if len(superAdmins) > 0 && len(admins) > 0 {
+		filtered := admins[:0]
+		for _, adminID := range admins {
+			if !containsString(superAdmins, adminID) {
+				filtered = append(filtered, adminID)
+			}
+		}
+		admins = filtered
+	}
 	return superAdmins, admins
 }
 
@@ -298,7 +319,8 @@ func (s *Store) GrantAdmin(userID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if containsString(s.data.SuperAdminIDs, userID) || containsString(s.data.AdminIDs, userID) {
+	if containsString(s.configuredSuperAdminIDs, userID) || containsString(s.configuredAdminIDs, userID) ||
+		containsString(s.data.SuperAdminIDs, userID) || containsString(s.data.AdminIDs, userID) {
 		return s.persistLocked()
 	}
 	s.data.AdminIDs = append(s.data.AdminIDs, userID)
@@ -315,8 +337,11 @@ func (s *Store) RevokeAdmin(userID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if containsString(s.data.SuperAdminIDs, userID) {
+	if containsString(s.configuredSuperAdminIDs, userID) || containsString(s.data.SuperAdminIDs, userID) {
 		return errors.New("超级管理员只能在配置文件里修改")
+	}
+	if containsString(s.configuredAdminIDs, userID) {
+		return errors.New("配置文件中的管理员只能在配置文件里修改")
 	}
 	s.data.AdminIDs = removeString(s.data.AdminIDs, userID)
 	return s.persistLocked()
@@ -611,22 +636,195 @@ func (s *Store) AllowsSpeech(guildID, channelID, threadID string) bool {
 
 func (s *Store) persistLocked() error {
 	normalizeData(&s.data)
-
-	if err := os.MkdirAll(filepath.Dir(s.path), 0o755); err != nil {
+	if err := s.ensureSchemaLocked(); err != nil {
 		return err
 	}
 
-	data, err := json.MarshalIndent(s.data, "", "  ")
+	data, err := json.Marshal(s.data)
 	if err != nil {
 		return err
 	}
-	data = append(data, '\n')
 
-	tmpPath := s.path + ".tmp"
-	if err := os.WriteFile(tmpPath, data, 0o600); err != nil {
+	_, err = s.db.Exec(`
+INSERT INTO runtime_state (id, payload_json)
+VALUES (1, ?)
+ON CONFLICT(id) DO UPDATE SET payload_json = excluded.payload_json
+	`, string(data))
+	return err
+}
+
+func (s *Store) Close() error {
+	if s == nil || !s.ownsDB || s.db == nil {
+		return nil
+	}
+	return s.db.Close()
+}
+
+func (s *Store) ensureSchemaLocked() error {
+	if s == nil || s.db == nil {
+		return errors.New("sqlite db is not initialized")
+	}
+	_, err := s.db.Exec(`
+CREATE TABLE IF NOT EXISTS runtime_state (
+	id INTEGER PRIMARY KEY CHECK (id = 1),
+	payload_json TEXT NOT NULL
+)
+`)
+	return err
+}
+
+func (s *Store) loadFromSQLiteLocked() (Data, bool, error) {
+	var payload string
+	err := s.db.QueryRow(`SELECT payload_json FROM runtime_state WHERE id = 1`).Scan(&payload)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Data{}, false, nil
+	}
+	if err != nil {
+		return Data{}, false, err
+	}
+
+	loaded, err := parseDataJSON([]byte(payload))
+	if err != nil {
+		return Data{}, false, err
+	}
+	return loaded, true, nil
+}
+
+func loadLegacyData(path string) (Data, bool, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return Data{}, false, nil
+	}
+
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return Data{}, false, nil
+	}
+	if err != nil {
+		return Data{}, false, err
+	}
+	if strings.TrimSpace(string(data)) == "" {
+		return Data{}, false, nil
+	}
+
+	loaded, err := parseDataJSON(data)
+	if err != nil {
+		return Data{}, false, err
+	}
+	return loaded, true, nil
+}
+
+func parseDataJSON(data []byte) (Data, error) {
+	var parsed struct {
+		SuperAdminIDs      flexibleIDs                  `json:"super_admin_ids"`
+		AdminIDs           flexibleIDs                  `json:"admin_ids"`
+		Personas           map[string]string            `json:"personas"`
+		ActivePersona      string                       `json:"active_persona"`
+		SystemPrompt       string                       `json:"system_prompt"`
+		SpeechMode         string                       `json:"speech_mode"`
+		AllowedGuildIDs    flexibleIDs                  `json:"allowed_guild_ids"`
+		AllowedChannelIDs  flexibleIDs                  `json:"allowed_channel_ids"`
+		AllowedThreadIDs   flexibleIDs                  `json:"allowed_thread_ids"`
+		ProactiveReply     bool                         `json:"proactive_reply"`
+		ProactiveChance    float64                      `json:"proactive_chance"`
+		WorldBookEntries   map[string]WorldBookEntry    `json:"worldbook_entries"`
+		GuildEmojiProfiles map[string]GuildEmojiProfile `json:"guild_emoji_profiles"`
+	}
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		return Data{}, err
+	}
+
+	loaded := Data{
+		SuperAdminIDs:      []string(parsed.SuperAdminIDs),
+		AdminIDs:           []string(parsed.AdminIDs),
+		Personas:           parsed.Personas,
+		ActivePersona:      parsed.ActivePersona,
+		SystemPrompt:       parsed.SystemPrompt,
+		SpeechMode:         parsed.SpeechMode,
+		AllowedGuildIDs:    []string(parsed.AllowedGuildIDs),
+		AllowedChannelIDs:  []string(parsed.AllowedChannelIDs),
+		AllowedThreadIDs:   []string(parsed.AllowedThreadIDs),
+		ProactiveReply:     parsed.ProactiveReply,
+		ProactiveChance:    parsed.ProactiveChance,
+		WorldBookEntries:   parsed.WorldBookEntries,
+		GuildEmojiProfiles: parsed.GuildEmojiProfiles,
+	}
+	normalizeData(&loaded)
+	return loaded, nil
+}
+
+func (s *Store) loadConfiguredAdminsLocked() error {
+	if s == nil {
+		return nil
+	}
+	configured, ok, err := loadOrCreateLegacyAdminConfig(s.legacyPath, s.data)
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmpPath, s.path)
+	if !ok {
+		s.configuredSuperAdminIDs = nil
+		s.configuredAdminIDs = nil
+		return nil
+	}
+	s.configuredSuperAdminIDs = configured.SuperAdminIDs
+	s.configuredAdminIDs = configured.AdminIDs
+	return nil
+}
+
+func loadOrCreateLegacyAdminConfig(path string, fallback Data) (Data, bool, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return Data{}, false, nil
+	}
+
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		template := defaultData()
+		template.SuperAdminIDs = normalizeIDs(append(template.SuperAdminIDs, fallback.SuperAdminIDs...))
+		template.AdminIDs = normalizeIDs(append(template.AdminIDs, fallback.AdminIDs...))
+		templateData, marshalErr := json.MarshalIndent(template, "", "  ")
+		if marshalErr != nil {
+			return Data{}, false, marshalErr
+		}
+		templateData = append(templateData, '\n')
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			return Data{}, false, err
+		}
+		if err := os.WriteFile(path, templateData, 0o600); err != nil {
+			return Data{}, false, err
+		}
+		return Data{
+			SuperAdminIDs: template.SuperAdminIDs,
+			AdminIDs:      template.AdminIDs,
+		}, true, nil
+	}
+	if err != nil {
+		return Data{}, false, err
+	}
+	if strings.TrimSpace(string(data)) == "" {
+		return Data{}, false, nil
+	}
+
+	loaded, err := parseDataJSON(data)
+	if err != nil {
+		return Data{}, false, err
+	}
+	return Data{
+		SuperAdminIDs: loaded.SuperAdminIDs,
+		AdminIDs:      loaded.AdminIDs,
+	}, true, nil
+}
+
+func defaultDBPathForLegacy(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "bot.db"
+	}
+	ext := filepath.Ext(path)
+	if ext == "" {
+		return path + ".db"
+	}
+	return strings.TrimSuffix(path, ext) + ".db"
 }
 
 func defaultData() Data {

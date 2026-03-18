@@ -34,6 +34,7 @@ OPENAI_RERANK_MODEL=test-rerank
 OPENAI_HTTP_TIMEOUT_SECONDS=600
 SYSTEM_PROMPT="测试 system prompt"
 BOT_CONFIG_FILE=runtime-config.json
+BOT_SQLITE_PATH=runtime.db
 BOT_COMMAND_GUILD_ID=test-guild
 PLUGINS_DIR=test-plugins
 `
@@ -55,6 +56,7 @@ PLUGINS_DIR=test-plugins
 		"OPENAI_HTTP_TIMEOUT_SECONDS",
 		"SYSTEM_PROMPT",
 		"BOT_CONFIG_FILE",
+		"BOT_SQLITE_PATH",
 		"BOT_COMMAND_GUILD_ID",
 		"PLUGINS_DIR",
 	} {
@@ -104,6 +106,9 @@ PLUGINS_DIR=test-plugins
 	}
 	if cfg.Bot.ConfigFilePath != "runtime-config.json" {
 		t.Fatalf("unexpected config file path: %q", cfg.Bot.ConfigFilePath)
+	}
+	if cfg.Bot.SQLitePath != "runtime.db" {
+		t.Fatalf("unexpected sqlite path: %q", cfg.Bot.SQLitePath)
 	}
 	if cfg.Bot.CommandGuildID != "test-guild" {
 		t.Fatalf("unexpected command guild id: %q", cfg.Bot.CommandGuildID)

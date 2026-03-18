@@ -1,0 +1,11 @@
+.git
+.gitignore
+.env
+.env.*
+!.env.example
+bot_config.json
+bot.db
+discordbot
+data
+plugins
+*.log

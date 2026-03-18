@@ -2,7 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
-## Unreleased
+## v0.6.1 - 2026-03-18
+
+### Added
+
+- Added a shared SQLite storage backend for runtime config, plugin registry/private storage, and channel memory.
+- Added sqlite-vec powered retrieval persistence so embeddings survive restarts instead of living only in memory.
+- Added tests covering SQLite-backed memory persistence and registry migration.
+- Added `Dockerfile` and `docker-compose.yml` for containerized deployment with persistent `/data` storage.
 
 ### Changed
 
@@ -11,6 +18,8 @@ All notable changes to this project will be documented in this file.
 - Cleaned `.env.example` and both README files to remove the retired plugin market configuration.
 - Added dedicated Chinese and English plugin authoring guides, and linked them from the README navigation.
 - Reworked `/setup` into an embed panel with context-aware toggle buttons for the current server, channel, or thread.
+- Runtime state now persists in `BOT_SQLITE_PATH` (default `bot.db`), while `BOT_CONFIG_FILE` remains as the legacy/bootstrap admin config source.
+- Startup now auto-migrates legacy `bot_config.json` and `plugins/registry.json` data into SQLite when needed.
 
 ## v0.6.0 - 2026-03-18
 

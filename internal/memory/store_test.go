@@ -2,9 +2,12 @@ package memory
 
 import (
 	"context"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	sqlitestorage "discordbot/internal/storage/sqlite"
 )
 
 func TestAddMessageIndexesWithDetachedContext(t *testing.T) {
@@ -135,5 +138,78 @@ func TestMessageRecordRenderForModelIncludesVisualReferences(t *testing.T) {
 		if !strings.Contains(rendered, check) {
 			t.Fatalf("expected %q in rendered message, got %q", check, rendered)
 		}
+	}
+}
+
+func TestStorePersistsHistorySummaryAndVectorsInSQLite(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "memory.db")
+	db, err := sqlitestorage.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+
+	indexed := make(chan struct{}, 1)
+	store, err := NewStoreWithDB(func(ctx context.Context, input string) ([]float64, error) {
+		indexed <- struct{}{}
+		return []float64{1, 2, 3}, nil
+	}, db)
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+
+	store.AddRecord(context.Background(), "channel-1", MessageRecord{
+		Role:    "user",
+		GuildID: "guild-1",
+		Content: "hello sqlite",
+		Author: MessageAuthor{
+			UserID:      "user-1",
+			Username:    "alice",
+			DisplayName: "Alice",
+		},
+	})
+	store.SetSummary("channel-1", "summary text")
+
+	select {
+	case <-indexed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for vector indexing")
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for len(store.TopKRecords("channel-1", []float64{1, 2, 3}, 4)) == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for persisted vectors")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if err := db.Close(); err != nil {
+		t.Fatalf("close sqlite: %v", err)
+	}
+
+	reopenedDB, err := sqlitestorage.Open(dbPath)
+	if err != nil {
+		t.Fatalf("reopen sqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = reopenedDB.Close() })
+
+	reopenedStore, err := NewStoreWithDB(func(ctx context.Context, input string) ([]float64, error) {
+		return []float64{1, 2, 3}, nil
+	}, reopenedDB)
+	if err != nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+
+	summary, messages := reopenedStore.SummaryAndRecent("channel-1")
+	if summary != "summary text" {
+		t.Fatalf("unexpected summary: %q", summary)
+	}
+	if len(messages) != 1 || messages[0].Content != "hello sqlite" {
+		t.Fatalf("unexpected messages: %#v", messages)
+	}
+
+	records := reopenedStore.TopKRecords("channel-1", []float64{1, 2, 3}, 4)
+	if len(records) != 1 || records[0].Content != "hello sqlite" {
+		t.Fatalf("unexpected vector records: %#v", records)
 	}
 }

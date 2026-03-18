@@ -2,13 +2,17 @@ package memory
 
 import (
 	"context"
+	"database/sql"
+	"encoding/json"
 	"fmt"
 	"log"
-	"math"
-	"sort"
 	"strings"
 	"sync"
 	"time"
+
+	sqlitevec "github.com/asg017/sqlite-vec-go-bindings/cgo"
+
+	sqlitestorage "discordbot/internal/storage/sqlite"
 )
 
 var utc8Location = time.FixedZone("UTC+8", 8*60*60)
@@ -67,13 +71,95 @@ type Store struct {
 	mu      sync.Mutex
 	byChID  map[string]*ChannelMemory
 	embedFn EmbedFn
+	db      *sql.DB
+	ownsDB  bool
 }
 
 func NewStore(embedFn EmbedFn) *Store {
-	return &Store{
+	db, err := sqlitestorage.OpenInMemory()
+	if err != nil {
+		panic(err)
+	}
+	store, err := NewStoreWithDB(embedFn, db)
+	if err != nil {
+		_ = db.Close()
+		panic(err)
+	}
+	store.ownsDB = true
+	return store
+}
+
+func NewStoreWithDB(embedFn EmbedFn, db *sql.DB) (*Store, error) {
+	if db == nil {
+		return nil, fmt.Errorf("sqlite db is required")
+	}
+	store := &Store{
 		byChID:  make(map[string]*ChannelMemory),
 		embedFn: embedFn,
+		db:      db,
 	}
+	if err := store.ensureSchema(); err != nil {
+		return nil, err
+	}
+	return store, nil
+}
+
+func (s *Store) Close() error {
+	if s == nil || !s.ownsDB || s.db == nil {
+		return nil
+	}
+	return s.db.Close()
+}
+
+func (s *Store) ensureSchema() error {
+	statements := []string{
+		`CREATE TABLE IF NOT EXISTS channel_summaries (
+			channel_id TEXT PRIMARY KEY,
+			summary TEXT NOT NULL DEFAULT ''
+		)`,
+		`CREATE TABLE IF NOT EXISTS channel_messages (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			channel_id TEXT NOT NULL,
+			role TEXT NOT NULL,
+			guild_id TEXT NOT NULL DEFAULT '',
+			content TEXT NOT NULL DEFAULT '',
+			time_unix INTEGER NOT NULL,
+			author_user_id TEXT NOT NULL DEFAULT '',
+			author_username TEXT NOT NULL DEFAULT '',
+			author_global_name TEXT NOT NULL DEFAULT '',
+			author_nick TEXT NOT NULL DEFAULT '',
+			author_display_name TEXT NOT NULL DEFAULT '',
+			reply_message_id TEXT NOT NULL DEFAULT '',
+			reply_role TEXT NOT NULL DEFAULT '',
+			reply_content TEXT NOT NULL DEFAULT '',
+			reply_time_unix INTEGER NOT NULL DEFAULT 0,
+			reply_author_user_id TEXT NOT NULL DEFAULT '',
+			reply_author_username TEXT NOT NULL DEFAULT '',
+			reply_author_global_name TEXT NOT NULL DEFAULT '',
+			reply_author_nick TEXT NOT NULL DEFAULT '',
+			reply_author_display_name TEXT NOT NULL DEFAULT '',
+			images_json TEXT NOT NULL DEFAULT '[]'
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_channel_messages_channel_id_id
+		ON channel_messages(channel_id, id)`,
+		`CREATE TABLE IF NOT EXISTS channel_vectors (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			channel_id TEXT NOT NULL,
+			content TEXT NOT NULL,
+			rendered TEXT NOT NULL,
+			time_unix INTEGER NOT NULL,
+			embedding_dim INTEGER NOT NULL,
+			embedding BLOB NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_channel_vectors_channel_dim_id
+		ON channel_vectors(channel_id, embedding_dim, id)`,
+	}
+	for _, statement := range statements {
+		if _, err := s.db.Exec(statement); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Store) AddMessage(ctx context.Context, chID, role, content string) {
@@ -85,9 +171,14 @@ func (s *Store) AddMessage(ctx context.Context, chID, role, content string) {
 
 func (s *Store) AddRecord(ctx context.Context, chID string, record MessageRecord) {
 	record = normalizeMessageRecord(record)
-	mem := s.getOrCreate(chID)
+	if err := s.insertMessage(chID, record); err != nil {
+		log.Printf("memory add record failed: channel=%s err=%v", strings.TrimSpace(chID), err)
+		return
+	}
 	s.mu.Lock()
-	mem.Messages = append(mem.Messages, record)
+	if mem := s.byChID[chID]; mem != nil {
+		mem.Messages = append(mem.Messages, record)
+	}
 	s.mu.Unlock()
 	if record.Role == "user" && record.Content != "" {
 		go func() {
@@ -101,32 +192,34 @@ func (s *Store) AddRecord(ctx context.Context, chID string, record MessageRecord
 func (s *Store) SummaryAndRecent(chID string) (summary string, messages []MessageRecord) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	mem := s.byChID[chID]
-	if mem == nil {
+	mem, err := s.loadChannelLocked(chID)
+	if err != nil {
+		log.Printf("memory summary load failed: channel=%s err=%v", strings.TrimSpace(chID), err)
 		return "", nil
 	}
 	return mem.Summary, append([]MessageRecord(nil), mem.Messages...)
 }
 
 func (s *Store) SetSummary(chID, summary string) {
+	if err := s.upsertSummary(chID, summary); err != nil {
+		log.Printf("memory set summary failed: channel=%s err=%v", strings.TrimSpace(chID), err)
+		return
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	mem := s.byChID[chID]
-	if mem == nil {
-		mem = &ChannelMemory{}
-		s.byChID[chID] = mem
+	if mem := s.byChID[chID]; mem != nil {
+		mem.Summary = strings.TrimSpace(summary)
 	}
-	mem.Summary = summary
 }
 
 func (s *Store) TrimHistory(chID string, keep int) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	mem := s.byChID[chID]
-	if mem == nil {
+	if err := s.trimHistoryDB(chID, keep); err != nil {
+		log.Printf("memory trim history failed: channel=%s err=%v", strings.TrimSpace(chID), err)
 		return
 	}
-	if len(mem.Messages) > keep {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if mem := s.byChID[chID]; mem != nil && len(mem.Messages) > keep {
 		mem.Messages = mem.Messages[len(mem.Messages)-keep:]
 	}
 }
@@ -141,69 +234,305 @@ func (s *Store) TopK(chID string, query []float64, k int) []string {
 }
 
 func (s *Store) TopKRecords(chID string, query []float64, k int) []VectorRecord {
-	s.mu.Lock()
-	mem := s.byChID[chID]
-	if mem == nil {
-		s.mu.Unlock()
+	serialized, dim, err := serializeVector(query)
+	if err != nil {
+		log.Printf("memory serialize query vector failed: %v", err)
 		return nil
 	}
-	vectors := append([]VectorRecord(nil), mem.Vectors...)
-	s.mu.Unlock()
-	type scored struct {
-		vec   VectorRecord
-		score float64
+	rows, err := s.db.Query(`
+SELECT content, rendered, time_unix
+FROM channel_vectors
+WHERE channel_id = ? AND embedding_dim = ?
+ORDER BY vec_distance_cosine(embedding, ?)
+LIMIT ?
+`, strings.TrimSpace(chID), dim, serialized, k)
+	if err != nil {
+		log.Printf("memory vector query failed: channel=%s err=%v", strings.TrimSpace(chID), err)
+		return nil
 	}
-	scoredList := make([]scored, 0, len(vectors))
-	for _, vec := range vectors {
-		score := cosineSimilarity(query, vec.Embedding)
-		scoredList = append(scoredList, scored{vec: vec, score: score})
+	defer rows.Close()
+
+	results := make([]VectorRecord, 0, k)
+	for rows.Next() {
+		var (
+			content  string
+			rendered string
+			timeUnix int64
+		)
+		if err := rows.Scan(&content, &rendered, &timeUnix); err != nil {
+			log.Printf("memory vector scan failed: channel=%s err=%v", strings.TrimSpace(chID), err)
+			return results
+		}
+		results = append(results, VectorRecord{
+			Content:  strings.TrimSpace(content),
+			Rendered: strings.TrimSpace(rendered),
+			Time:     time.Unix(timeUnix, 0).UTC(),
+		})
 	}
-	sort.Slice(scoredList, func(i, j int) bool {
-		return scoredList[i].score > scoredList[j].score
-	})
-	if len(scoredList) > k {
-		scoredList = scoredList[:k]
-	}
-	results := make([]VectorRecord, 0, len(scoredList))
-	for _, item := range scoredList {
-		results = append(results, item.vec)
+	if err := rows.Err(); err != nil {
+		log.Printf("memory vector rows failed: channel=%s err=%v", strings.TrimSpace(chID), err)
 	}
 	return results
 }
 
-func (s *Store) getOrCreate(chID string) *ChannelMemory {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	mem := s.byChID[chID]
-	if mem == nil {
-		mem = &ChannelMemory{}
-		s.byChID[chID] = mem
-	}
-	return mem
-}
-
 func (s *Store) indexMessage(ctx context.Context, chID string, record MessageRecord) {
+	if s.embedFn == nil {
+		return
+	}
 	embedding, err := s.embedFn(ctx, record.Content)
 	if err != nil {
 		log.Printf("embedding error: %v", err)
 		return
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	mem := s.byChID[chID]
-	if mem == nil {
-		mem = &ChannelMemory{}
-		s.byChID[chID] = mem
+	serialized, dim, err := serializeVector(embedding)
+	if err != nil {
+		log.Printf("embedding serialize error: %v", err)
+		return
 	}
-	mem.Vectors = append(mem.Vectors, VectorRecord{
-		Content:   record.Content,
-		Rendered:  record.RenderForModel(),
-		Embedding: embedding,
-		Time:      record.Time,
-	})
-	if len(mem.Vectors) > 200 {
-		mem.Vectors = mem.Vectors[len(mem.Vectors)-200:]
+	if _, err := s.db.Exec(`
+INSERT INTO channel_vectors (channel_id, content, rendered, time_unix, embedding_dim, embedding)
+VALUES (?, ?, ?, ?, ?, ?)
+`, strings.TrimSpace(chID), record.Content, record.RenderForModel(), record.Time.UTC().Unix(), dim, serialized); err != nil {
+		log.Printf("memory vector insert failed: channel=%s err=%v", strings.TrimSpace(chID), err)
+		return
 	}
+	if _, err := s.db.Exec(`
+DELETE FROM channel_vectors
+WHERE channel_id = ?
+AND id NOT IN (
+	SELECT id
+	FROM channel_vectors
+	WHERE channel_id = ?
+	ORDER BY id DESC
+	LIMIT 200
+)
+`, strings.TrimSpace(chID), strings.TrimSpace(chID)); err != nil {
+		log.Printf("memory vector trim failed: channel=%s err=%v", strings.TrimSpace(chID), err)
+	}
+}
+
+func (s *Store) insertMessage(chID string, record MessageRecord) error {
+	imagesJSON, err := json.Marshal(record.Images)
+	if err != nil {
+		return err
+	}
+
+	reply := normalizeReplyPointer(record.ReplyTo)
+	_, err = s.db.Exec(`
+INSERT INTO channel_messages (
+	channel_id,
+	role,
+	guild_id,
+	content,
+	time_unix,
+	author_user_id,
+	author_username,
+	author_global_name,
+	author_nick,
+	author_display_name,
+	reply_message_id,
+	reply_role,
+	reply_content,
+	reply_time_unix,
+	reply_author_user_id,
+	reply_author_username,
+	reply_author_global_name,
+	reply_author_nick,
+	reply_author_display_name,
+	images_json
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`,
+		strings.TrimSpace(chID),
+		record.Role,
+		record.GuildID,
+		record.Content,
+		record.Time.UTC().Unix(),
+		record.Author.UserID,
+		record.Author.Username,
+		record.Author.GlobalName,
+		record.Author.Nick,
+		record.Author.DisplayName,
+		reply.MessageID,
+		reply.Role,
+		reply.Content,
+		reply.Time.UTC().Unix(),
+		reply.Author.UserID,
+		reply.Author.Username,
+		reply.Author.GlobalName,
+		reply.Author.Nick,
+		reply.Author.DisplayName,
+		string(imagesJSON),
+	)
+	return err
+}
+
+func (s *Store) upsertSummary(chID, summary string) error {
+	_, err := s.db.Exec(`
+INSERT INTO channel_summaries (channel_id, summary)
+VALUES (?, ?)
+ON CONFLICT(channel_id) DO UPDATE SET summary = excluded.summary
+`, strings.TrimSpace(chID), strings.TrimSpace(summary))
+	return err
+}
+
+func (s *Store) trimHistoryDB(chID string, keep int) error {
+	chID = strings.TrimSpace(chID)
+	if chID == "" {
+		return nil
+	}
+	if keep <= 0 {
+		_, err := s.db.Exec(`DELETE FROM channel_messages WHERE channel_id = ?`, chID)
+		return err
+	}
+	_, err := s.db.Exec(`
+DELETE FROM channel_messages
+WHERE channel_id = ?
+AND id NOT IN (
+	SELECT id
+	FROM channel_messages
+	WHERE channel_id = ?
+	ORDER BY id DESC
+	LIMIT ?
+)
+`, chID, chID, keep)
+	return err
+}
+
+func (s *Store) loadChannelLocked(chID string) (*ChannelMemory, error) {
+	chID = strings.TrimSpace(chID)
+	if mem := s.byChID[chID]; mem != nil {
+		return mem, nil
+	}
+
+	mem := &ChannelMemory{}
+	if err := s.db.QueryRow(`SELECT summary FROM channel_summaries WHERE channel_id = ?`, chID).Scan(&mem.Summary); err != nil && err != sql.ErrNoRows {
+		return nil, err
+	}
+
+	rows, err := s.db.Query(`
+SELECT
+	role,
+	guild_id,
+	content,
+	time_unix,
+	author_user_id,
+	author_username,
+	author_global_name,
+	author_nick,
+	author_display_name,
+	reply_message_id,
+	reply_role,
+	reply_content,
+	reply_time_unix,
+	reply_author_user_id,
+	reply_author_username,
+	reply_author_global_name,
+	reply_author_nick,
+	reply_author_display_name,
+	images_json
+FROM channel_messages
+WHERE channel_id = ?
+ORDER BY id ASC
+`, chID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		record, err := scanMessageRecord(rows)
+		if err != nil {
+			return nil, err
+		}
+		mem.Messages = append(mem.Messages, record)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	s.byChID[chID] = mem
+	return mem, nil
+}
+
+func scanMessageRecord(scanner interface {
+	Scan(dest ...any) error
+}) (MessageRecord, error) {
+	var (
+		record         MessageRecord
+		timeUnix       int64
+		replyMessageID string
+		replyRole      string
+		replyContent   string
+		replyTimeUnix  int64
+		replyAuthor    MessageAuthor
+		imagesJSON     string
+	)
+	err := scanner.Scan(
+		&record.Role,
+		&record.GuildID,
+		&record.Content,
+		&timeUnix,
+		&record.Author.UserID,
+		&record.Author.Username,
+		&record.Author.GlobalName,
+		&record.Author.Nick,
+		&record.Author.DisplayName,
+		&replyMessageID,
+		&replyRole,
+		&replyContent,
+		&replyTimeUnix,
+		&replyAuthor.UserID,
+		&replyAuthor.Username,
+		&replyAuthor.GlobalName,
+		&replyAuthor.Nick,
+		&replyAuthor.DisplayName,
+		&imagesJSON,
+	)
+	if err != nil {
+		return MessageRecord{}, err
+	}
+
+	record.Time = time.Unix(timeUnix, 0).UTC()
+	if strings.TrimSpace(imagesJSON) != "" {
+		if err := json.Unmarshal([]byte(imagesJSON), &record.Images); err != nil {
+			return MessageRecord{}, err
+		}
+	}
+	if strings.TrimSpace(replyMessageID) != "" || strings.TrimSpace(replyContent) != "" {
+		record.ReplyTo = &ReplyRecord{
+			MessageID: replyMessageID,
+			Role:      replyRole,
+			Content:   replyContent,
+			Time:      time.Unix(replyTimeUnix, 0).UTC(),
+			Author:    replyAuthor,
+		}
+	}
+	return normalizeMessageRecord(record), nil
+}
+
+func normalizeReplyPointer(reply *ReplyRecord) ReplyRecord {
+	if reply == nil {
+		return ReplyRecord{
+			Time: time.Unix(0, 0).UTC(),
+		}
+	}
+	normalized := normalizeReplyRecord(*reply)
+	return normalized
+}
+
+func serializeVector(vector []float64) ([]byte, int, error) {
+	if len(vector) == 0 {
+		return nil, 0, fmt.Errorf("vector is empty")
+	}
+	converted := make([]float32, 0, len(vector))
+	for _, value := range vector {
+		converted = append(converted, float32(value))
+	}
+	serialized, err := sqlitevec.SerializeFloat32(converted)
+	if err != nil {
+		return nil, 0, err
+	}
+	return serialized, len(converted), nil
 }
 
 func (r MessageRecord) RenderForModel() string {
@@ -361,20 +690,4 @@ func renderImageReference(image ImageReference) string {
 	default:
 		return fmt.Sprintf("图片资源 %s, 图片URL: %s", valueOrUnknown(image.Name), url)
 	}
-}
-
-func cosineSimilarity(a, b []float64) float64 {
-	if len(a) == 0 || len(b) == 0 || len(a) != len(b) {
-		return 0
-	}
-	var dot, normA, normB float64
-	for i := range a {
-		dot += a[i] * b[i]
-		normA += a[i] * a[i]
-		normB += b[i] * b[i]
-	}
-	if normA == 0 || normB == 0 {
-		return 0
-	}
-	return dot / (math.Sqrt(normA) * math.Sqrt(normB))
 }

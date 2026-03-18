@@ -1,0 +1,16 @@
+services:
+  discordbot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: discordbot
+    restart: unless-stopped
+    init: true
+    env_file:
+      - .env
+    environment:
+      BOT_SQLITE_PATH: /data/bot.db
+      BOT_CONFIG_FILE: /data/bot_config.json
+      PLUGINS_DIR: /data/plugins
+    volumes:
+      - ./data:/data

@@ -2,6 +2,7 @@ package pluginhost
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -38,6 +39,7 @@ type RefreshCommandsFn func() error
 
 type Config struct {
 	PluginsDir                string
+	DB                        *sql.DB
 	HostVersion               string
 	RuntimeStore              *runtimecfg.Store
 	ChatFn                    ChatFn
@@ -79,7 +81,15 @@ type managedPlugin struct {
 }
 
 func NewManager(cfg Config) (*Manager, error) {
-	registry, err := OpenRegistry(cfg.PluginsDir)
+	var (
+		registry *Registry
+		err      error
+	)
+	if cfg.DB != nil {
+		registry, err = OpenRegistryWithDB(cfg.DB, cfg.PluginsDir)
+	} else {
+		registry, err = OpenRegistry(cfg.PluginsDir)
+	}
 	if err != nil {
 		return nil, err
 	}

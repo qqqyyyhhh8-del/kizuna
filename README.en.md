@@ -2,13 +2,14 @@
 
 [简体中文](README.md) | [English](README.en.md) | [Plugin Guide](PLUGIN_GUIDE.en.md)
 
-Current version: `v0.6.0`  
+Current version: `v0.6.1`  
 See [CHANGELOG.md](CHANGELOG.md) for release notes.
 
 This is a Discord bot built with Go + Discordgo. It includes:
 - Basic chat via OpenAI-compatible APIs
 - Automatic conversation summarization to reduce context growth
 - Simple RAG retrieval with embeddings and optional rerank
+- SQLite + sqlite-vec persistent storage for chat memory, worldbook data, and plugin state
 - Plugin-based persona, guild emoji, and proactive-reply extensions
 - Core slash management for speaking scopes, admins, and extra system prompt
 - External plugin hosting with Git-installed extensions
@@ -49,9 +50,10 @@ After installation, the host will register `/persona`, `/proactive`, and `/emoji
 | `OPENAI_RERANK_MODEL` | Rerank model. Leave empty to disable rerank |
 | `OPENAI_HTTP_TIMEOUT_SECONDS` | Optional HTTP client timeout for OpenAI-compatible endpoints. If empty, the outer context timeout is used |
 | `SYSTEM_PROMPT` | Optional base system prompt |
-| `BOT_CONFIG_FILE` | Runtime config file path (default: `bot_config.json`) |
+| `BOT_SQLITE_PATH` | Primary SQLite database path (default: `bot.db`) for runtime config, plugin registry/storage, chat memory, summaries, and sqlite-vec retrieval data |
+| `BOT_CONFIG_FILE` | Legacy/bootstrap config file path (default: `bot_config.json`). Older fields are imported into SQLite on first start, and `super_admin_ids` are still read from this file |
 | `BOT_COMMAND_GUILD_ID` | Optional guild ID for slash command registration. If empty, commands are global |
-| `PLUGINS_DIR` | Plugin host working directory (default: `plugins`) containing the plugin registry and installed source trees |
+| `PLUGINS_DIR` | Plugin host working directory (default: `plugins`) containing installed source trees, repo caches, and temp files |
 
 ## Quick Start
 1. Clone the repo and enter the directory:
@@ -71,8 +73,47 @@ After installation, the host will register `/persona`, `/proactive`, and `/emoji
 
 The bot loads `.env` from the current directory automatically. Existing shell environment variables take precedence over `.env`.
 
-## Config File
-If `BOT_CONFIG_FILE` does not exist, it will be created automatically on startup:
+## Docker Deployment
+The repository now includes [Dockerfile](Dockerfile) and [docker-compose.yml](docker-compose.yml).
+
+1. Copy the env template:
+   ```bash
+   cp .env.example .env
+   ```
+2. Edit `.env` and fill in the required values such as `DISCORD_TOKEN` and `OPENAI_API_KEY`.
+3. Prepare the bootstrap admin config:
+   ```bash
+   mkdir -p data
+   cat > data/bot_config.json <<'EOF'
+   {
+     "super_admin_ids": ["your_discord_user_id"],
+     "admin_ids": []
+   }
+   EOF
+   ```
+4. Start the container:
+   ```bash
+   docker compose up -d --build
+   ```
+
+Notes:
+- The container defaults to `/data/bot.db`, `/data/bot_config.json`, and `/data/plugins`.
+- `./data` is mounted into `/data` so the SQLite database, bootstrap config, and plugin directories survive restarts.
+- If you are migrating an older instance into Docker, copy the old `bot_config.json` to `data/bot_config.json` and the old `plugins/registry.json` to `data/plugins/registry.json` before first start so the host can import them automatically.
+- The bot does not need any exposed HTTP ports.
+- The image keeps both `git` and `go` because plugin install/upgrade uses Git and the current official plugins run with `go run`.
+
+## Storage And Legacy Import
+Runtime data is now persisted in the SQLite database pointed to by `BOT_SQLITE_PATH` (default: `bot.db`), including:
+- channel history, summaries, and sqlite-vec retrieval vectors
+- extra system prompt, speaking scopes, worldbook entries, and guild emoji analysis results
+- plugin registry and plugin-private storage
+
+`BOT_CONFIG_FILE` now serves two purposes:
+- legacy import for older `bot_config.json` deployments
+- bootstrap/static admin configuration
+
+If `BOT_CONFIG_FILE` does not exist, the host creates a template automatically:
 
 ```json
 {
@@ -89,6 +130,7 @@ If `BOT_CONFIG_FILE` does not exist, it will be created automatically on startup
 
 - `super_admin_ids` can only be edited in the config file. Both string IDs and numeric Discord IDs are accepted.
 - `admin_ids` can be edited in the config file or granted/revoked by a super admin through slash commands.
+- Older `system_prompt`, `speech_mode`, `allowed_*`, `worldbook_entries`, and `guild_emoji_profiles` fields are imported into SQLite automatically when the database is initialized for the first time.
 - `system_prompt` stores extra system prompt content, such as jailbreak-style policy overrides.
 - `speech_mode` currently defaults to `allowlist`; the bot only speaks when a location matches the configured allowlist.
 - `allowed_guild_ids` is the allowlist of guild IDs.
@@ -113,6 +155,7 @@ If `BOT_CONFIG_FILE` does not exist, it will be created automatically on startup
 - In guilds, use `@bot your message` or reply directly to the bot to trigger a response.
 - The bot shows `typing` while it is processing a reply.
 - On first start, the bot will not speak in any guild location until `/setup` is configured from the target location.
+- When upgrading from older versions, any existing `bot_config.json` or `plugins/registry.json` files are migrated into SQLite automatically on startup.
 - Management has been moved to slash commands; old message-prefix commands such as `!persona`, `!system`, and `!admin` are not used anymore.
 - `/persona`, `/emoji`, and `/proactive` are now provided by official plugins. If a plugin is not installed, its slash command will not exist.
 - If the official `/emoji` plugin times out during analysis, check the response speed of your OpenAI-compatible endpoint. If needed, set `OPENAI_HTTP_TIMEOUT_SECONDS=600` in `.env`.

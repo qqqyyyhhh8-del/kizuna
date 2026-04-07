@@ -40,10 +40,15 @@ type Handler struct {
 	runtimeStore  *runtimecfg.Store
 	httpClient    *http.Client
 	pluginManager *pluginhost.Manager
+	modelClient   *openai.Client
+	chatBaseURL   string
+	chatModel     string
 
 	emojiMu        sync.Mutex
 	emojiAnalyzing map[string]struct{}
 	randFloat64    func() float64
+	modelMu        sync.RWMutex
+	modelCatalogs  map[string][]string
 }
 
 func NewHandler(cfg config.BotConfig, chatFn ChatFn, embedFn EmbedFn, rerankFn RerankFn, store *memory.Store, runtimeStore *runtimecfg.Store) *Handler {
@@ -57,6 +62,7 @@ func NewHandler(cfg config.BotConfig, chatFn ChatFn, embedFn EmbedFn, rerankFn R
 		httpClient:     &http.Client{Timeout: 30 * time.Second},
 		emojiAnalyzing: map[string]struct{}{},
 		randFloat64:    rand.Float64,
+		modelCatalogs:  map[string][]string{},
 	}
 }
 
@@ -65,6 +71,70 @@ func (h *Handler) SetPluginManager(manager *pluginhost.Manager) {
 		return
 	}
 	h.pluginManager = manager
+}
+
+func (h *Handler) SetModelClient(client *openai.Client, cfg config.OpenAIConfig) {
+	if h == nil {
+		return
+	}
+	h.modelClient = client
+	h.chatBaseURL = strings.TrimRight(strings.TrimSpace(cfg.BaseURL), "/")
+	h.chatModel = strings.TrimSpace(cfg.ChatModel)
+}
+
+func (h *Handler) chat(ctx context.Context, messages []openai.ChatMessage) (string, error) {
+	if h == nil {
+		return "", errors.New("handler is nil")
+	}
+	if h.modelClient != nil && h.runtimeStore != nil {
+		runtimeCfg := h.runtimeStore.ChatRuntimeConfig(h.chatBaseURL, h.chatModel)
+		return h.modelClient.ChatWithOverride(ctx, messages, openai.ChatRuntimeOverride{
+			BaseURL: runtimeCfg.BaseURL,
+			Model:   runtimeCfg.Model,
+		})
+	}
+	return h.chatFn(ctx, messages)
+}
+
+func (h *Handler) currentChatRuntimeConfig() runtimecfg.ChatRuntimeConfig {
+	if h == nil {
+		return runtimecfg.ChatRuntimeConfig{
+			UsingEnvBaseURL: true,
+			UsingEnvModel:   true,
+		}
+	}
+	if h.runtimeStore == nil {
+		return runtimecfg.ChatRuntimeConfig{
+			BaseURL:         strings.TrimSpace(h.chatBaseURL),
+			Model:           strings.TrimSpace(h.chatModel),
+			UsingEnvBaseURL: true,
+			UsingEnvModel:   true,
+		}
+	}
+	return h.runtimeStore.ChatRuntimeConfig(h.chatBaseURL, h.chatModel)
+}
+
+func (h *Handler) cachedModelCatalog(baseURL string) []string {
+	if h == nil {
+		return nil
+	}
+	h.modelMu.RLock()
+	defer h.modelMu.RUnlock()
+	return append([]string(nil), h.modelCatalogs[strings.TrimRight(strings.TrimSpace(baseURL), "/")]...)
+}
+
+func (h *Handler) setCachedModelCatalog(baseURL string, models []string) {
+	if h == nil {
+		return
+	}
+	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	h.modelMu.Lock()
+	defer h.modelMu.Unlock()
+	if baseURL == "" || len(models) == 0 {
+		delete(h.modelCatalogs, baseURL)
+		return
+	}
+	h.modelCatalogs[baseURL] = append([]string(nil), models...)
 }
 
 func (h *Handler) HandleMessage(ctx context.Context, channelID, authorID, content string) (string, error) {
@@ -120,8 +190,8 @@ func (h *Handler) HandleMessageAtLocation(ctx context.Context, location speechLo
 	}
 
 	if providerActive {
-		systemPrompt = firstNonEmpty(strings.TrimSpace(overrideContext.SystemPrompt), systemPrompt)
-		personaPrompt = firstNonEmpty(strings.TrimSpace(overrideContext.PersonaPrompt), personaPrompt)
+		systemPrompt = applyPromptOverride(systemPrompt, overrideContext.SystemPrompt, overrideContext.ReplaceSystemPrompt)
+		personaPrompt = applyPromptOverride(personaPrompt, overrideContext.PersonaPrompt, overrideContext.ReplacePersonaPrompt)
 		summary = strings.TrimSpace(overrideContext.Summary)
 		retrieved = trimNonEmptyStrings(overrideContext.Retrieved)
 		recent = promptConversationMessagesToRecords(overrideContext.Recent)
@@ -131,7 +201,7 @@ func (h *Handler) HandleMessageAtLocation(ctx context.Context, location speechLo
 
 		summary, recent = h.store.SummaryAndRecent(channelID)
 		if shouldSummarize(recent) {
-			summaryContent, err := h.chatFn(ctx, summarizationPrompt(summary, recent))
+			summaryContent, err := h.chat(ctx, summarizationPrompt(summary, recent))
 			if err != nil {
 				log.Printf("summary error: %v", err)
 			} else {
@@ -147,13 +217,13 @@ func (h *Handler) HandleMessageAtLocation(ctx context.Context, location speechLo
 			if err != nil {
 				log.Printf("embed error: %v", err)
 			} else {
-				retrieved = h.retrieveRelevantMemories(ctx, channelID, record.Content, queryEmbedding)
+				retrieved = h.retrieveRelevantMemories(ctx, channelID, record.Content, queryEmbedding, recent)
 			}
 		}
 	}
 
 	pluginBlocks = append(pluginBlocks, h.buildPluginPromptBlocks(ctx, currentMessage, systemPrompt, personaPrompt, summary, recent, retrieved)...)
-	response, err := h.chatFn(ctx, buildChatMessages(systemPrompt, personaPrompt, summary, recent, retrieved, pluginBlocks))
+	response, err := h.chat(ctx, buildChatMessages(systemPrompt, personaPrompt, summary, recent, retrieved, pluginBlocks))
 	if err != nil {
 		return "", err
 	}
@@ -178,13 +248,13 @@ func (h *Handler) buildPluginConversationContext(ctx context.Context, currentMes
 	})
 }
 
-func (h *Handler) retrieveRelevantMemories(ctx context.Context, channelID, query string, queryEmbedding []float64) []string {
+func (h *Handler) retrieveRelevantMemories(ctx context.Context, channelID, query string, queryEmbedding []float64, recent []memory.MessageRecord) []string {
 	limit := retrievalTopK
 	if h.rerankFn != nil {
 		limit = rerankCandidateTopK
 	}
 
-	candidates := h.store.TopKRecords(channelID, queryEmbedding, limit)
+	candidates := filterRetrievedCandidates(h.store.TopKRecords(channelID, queryEmbedding, limit), recent)
 	if len(candidates) == 0 {
 		return nil
 	}
@@ -214,7 +284,7 @@ func summarizationPrompt(summary string, messages []memory.MessageRecord) []open
 	}
 	builder.WriteString("需要总结的新对话:\n")
 	for _, msg := range messages {
-		builder.WriteString(fmt.Sprintf("[%s]\n%s\n\n", msg.Role, renderMessageForLLM(msg)))
+		builder.WriteString(fmt.Sprintf("[%s]\n%s\n\n", msg.Role, renderHistoryMessageForLLM(msg)))
 	}
 	builder.WriteString("\n请用简洁中文更新摘要，保留关键事实、偏好和待办。")
 	return []openai.ChatMessage{
@@ -355,6 +425,36 @@ func (h *Handler) handleSystemCommand(content, authorID string) (string, error) 
 	}
 }
 
+func (h *Handler) handleContextCommand(content, authorID string, location speechLocation) (string, error) {
+	command := strings.TrimSpace(strings.TrimPrefix(content, "!context"))
+	if command == "" {
+		return contextHelp(), nil
+	}
+	if !h.runtimeStore.IsAdmin(authorID) {
+		return permissionDenied(), nil
+	}
+	if h.store == nil {
+		return "", errors.New("memory store is not configured")
+	}
+
+	switch command {
+	case "clear":
+		channelID := strings.TrimSpace(location.ThreadID)
+		scopeLabel := "当前子区"
+		if channelID == "" {
+			channelID = strings.TrimSpace(location.ChannelID)
+			scopeLabel = "当前频道"
+		}
+		if channelID == "" {
+			return "无法确定当前频道上下文。请直接在目标频道或子区中执行这个命令。", nil
+		}
+		h.store.ClearChannel(channelID)
+		return scopeLabel + "的上下文已清空。", nil
+	default:
+		return contextHelp(), nil
+	}
+}
+
 func (h *Handler) handleAdminCommand(content, authorID string) (string, error) {
 	command := strings.TrimSpace(strings.TrimPrefix(content, "!admin"))
 	if command == "" {
@@ -386,6 +486,20 @@ func (h *Handler) handleAdminCommand(content, authorID string) (string, error) {
 			return "", err
 		}
 		return fmt.Sprintf("已添加管理员: %s", targetID), nil
+	case strings.HasPrefix(command, "add-batch "):
+		if !h.runtimeStore.IsSuperAdmin(authorID) {
+			return superAdminDenied(), nil
+		}
+		targetIDs := extractUserIDs(strings.TrimSpace(strings.TrimPrefix(command, "add-batch ")))
+		if len(targetIDs) == 0 {
+			return adminHelp(), nil
+		}
+		for _, targetID := range targetIDs {
+			if err := h.runtimeStore.GrantAdmin(targetID); err != nil {
+				return "", err
+			}
+		}
+		return "已批量添加管理员: " + strings.Join(targetIDs, ", "), nil
 	case strings.HasPrefix(command, "remove "):
 		if !h.runtimeStore.IsSuperAdmin(authorID) {
 			return superAdminDenied(), nil
@@ -404,7 +518,10 @@ func (h *Handler) handleAdminCommand(content, authorID string) (string, error) {
 }
 
 func buildChatMessages(systemPrompt, personaPrompt, summary string, recent []memory.MessageRecord, retrieved []string, blocks []pluginapi.PromptBlock) []openai.ChatMessage {
-	messages := []openai.ChatMessage{{Role: "system", Content: systemPrompt}}
+	messages := make([]openai.ChatMessage, 0, 1+len(blocks)+len(recent)+3)
+	if strings.TrimSpace(systemPrompt) != "" {
+		messages = append(messages, openai.ChatMessage{Role: "system", Content: strings.TrimSpace(systemPrompt)})
+	}
 	if personaPrompt != "" {
 		messages = append(messages, openai.ChatMessage{
 			Role:    "system",
@@ -437,17 +554,39 @@ func buildChatMessagesWithPromptBlocks(messages []openai.ChatMessage, recent []m
 			role = "system"
 		}
 		content := strings.TrimSpace(block.Content)
-		if content == "" {
+		images := normalizePromptBlockImages(block.Images)
+		if content == "" && len(images) == 0 {
 			continue
+		}
+		if role == "user" && len(images) > 0 {
+			parts := []openai.ChatContentPart{}
+			if content != "" {
+				parts = append(parts, openai.TextPart(content))
+			}
+			for _, image := range images {
+				part := openai.ImageURLPart(image.URL)
+				if part.ImageURL == nil {
+					continue
+				}
+				parts = append(parts, part)
+			}
+			if len(parts) > 0 {
+				messages = append(messages, openai.ChatMessage{
+					Role:  role,
+					Parts: parts,
+				})
+				continue
+			}
 		}
 		messages = append(messages, openai.ChatMessage{
 			Role:    role,
 			Content: content,
 		})
 	}
-	for _, msg := range recent {
-		content := renderMessageForLLM(msg)
-		if len(msg.Images) == 0 {
+	for index, msg := range recent {
+		isCurrentUserMessage := index == len(recent)-1 && strings.TrimSpace(msg.Role) == "user"
+		content := renderPromptMessageForLLM(msg, isCurrentUserMessage)
+		if len(msg.Images) == 0 || !isCurrentUserMessage {
 			messages = append(messages, openai.ChatMessage{
 				Role:    msg.Role,
 				Content: content,
@@ -471,11 +610,95 @@ func buildChatMessagesWithPromptBlocks(messages []openai.ChatMessage, recent []m
 	return messages
 }
 
-func renderMessageForLLM(msg memory.MessageRecord) string {
+func applyPromptOverride(current, next string, replace bool) string {
+	next = strings.TrimSpace(next)
+	if replace {
+		return next
+	}
+	return firstNonEmpty(next, current)
+}
+
+func normalizePromptBlockImages(images []pluginapi.ImageReference) []pluginapi.ImageReference {
+	if len(images) == 0 {
+		return nil
+	}
+
+	normalized := make([]pluginapi.ImageReference, 0, len(images))
+	seen := make(map[string]struct{}, len(images))
+	for _, image := range images {
+		image.Kind = strings.TrimSpace(image.Kind)
+		image.Name = strings.TrimSpace(image.Name)
+		image.EmojiID = strings.TrimSpace(image.EmojiID)
+		image.URL = strings.TrimSpace(image.URL)
+		image.ContentType = strings.TrimSpace(image.ContentType)
+		if image.URL == "" {
+			continue
+		}
+		key := image.Kind + "\x00" + image.EmojiID + "\x00" + image.URL
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		normalized = append(normalized, image)
+	}
+	return normalized
+}
+
+func renderPromptMessageForLLM(msg memory.MessageRecord, includeFullMetadata bool) string {
 	if strings.TrimSpace(msg.Role) == "assistant" {
 		return strings.TrimSpace(msg.Content)
 	}
-	return msg.RenderForModel()
+	if includeFullMetadata {
+		return msg.RenderForModel()
+	}
+	return msg.RenderCompactForModel()
+}
+
+func renderHistoryMessageForLLM(msg memory.MessageRecord) string {
+	if strings.TrimSpace(msg.Role) == "assistant" {
+		return strings.TrimSpace(msg.Content)
+	}
+	return msg.RenderCompactForModel()
+}
+
+func filterRetrievedCandidates(candidates []memory.VectorRecord, recent []memory.MessageRecord) []memory.VectorRecord {
+	if len(candidates) == 0 {
+		return nil
+	}
+	if len(recent) == 0 {
+		return candidates
+	}
+
+	excludedRendered := make(map[string]struct{}, len(recent)*2)
+	excludedKeys := make(map[string]struct{}, len(recent))
+	for _, msg := range recent {
+		if strings.TrimSpace(msg.Role) != "user" {
+			continue
+		}
+		excludedRendered[msg.RenderCompactForModel()] = struct{}{}
+		excludedRendered[msg.RenderForModel()] = struct{}{}
+		excludedKeys[memoryRecordVectorKey(msg)] = struct{}{}
+	}
+
+	filtered := make([]memory.VectorRecord, 0, len(candidates))
+	for _, candidate := range candidates {
+		if _, ok := excludedRendered[strings.TrimSpace(candidate.Rendered)]; ok {
+			continue
+		}
+		if _, ok := excludedKeys[vectorRecordKey(candidate)]; ok {
+			continue
+		}
+		filtered = append(filtered, candidate)
+	}
+	return filtered
+}
+
+func memoryRecordVectorKey(record memory.MessageRecord) string {
+	return fmt.Sprintf("%d\x00%s", record.Time.UTC().Unix(), strings.TrimSpace(record.Content))
+}
+
+func vectorRecordKey(record memory.VectorRecord) string {
+	return fmt.Sprintf("%d\x00%s", record.Time.UTC().Unix(), strings.TrimSpace(record.Content))
 }
 
 func (h *Handler) buildPluginPromptBlocks(ctx context.Context, currentMessage pluginapi.MessageContext, systemPrompt, personaPrompt, summary string, recent []memory.MessageRecord, retrieved []string) []pluginapi.PromptBlock {
@@ -487,7 +710,7 @@ func (h *Handler) buildPluginPromptBlocks(ctx context.Context, currentMessage pl
 	for _, item := range recent {
 		history = append(history, pluginapi.PromptConversationMessage{
 			Role:    strings.TrimSpace(item.Role),
-			Content: renderMessageForLLM(item),
+			Content: renderHistoryMessageForLLM(item),
 		})
 	}
 
@@ -641,6 +864,28 @@ func extractUserID(input string) (string, bool) {
 	return field, true
 }
 
+func extractUserIDs(input string) []string {
+	fields := strings.Fields(strings.TrimSpace(input))
+	if len(fields) == 0 {
+		return nil
+	}
+
+	ids := make([]string, 0, len(fields))
+	seen := make(map[string]struct{}, len(fields))
+	for _, field := range fields {
+		id, ok := extractUserID(field)
+		if !ok {
+			continue
+		}
+		if _, exists := seen[id]; exists {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	return ids
+}
+
 func renderIDList(ids []string) string {
 	if len(ids) == 0 {
 		return "- 无"
@@ -661,8 +906,10 @@ func superAdminDenied() string {
 func commandHelp() string {
 	parts := []string{
 		"可用 Slash 命令:",
+		contextHelp(),
 		setupHelp(),
 		pluginHelp(),
+		modelHelp(),
 		systemHelp(),
 		adminHelp(),
 	}
@@ -671,6 +918,10 @@ func commandHelp() string {
 
 func personaHelp() string {
 	return "/persona 打开一站式人设管理面板"
+}
+
+func contextHelp() string {
+	return "/context clear 清空当前频道或子区上下文"
 }
 
 func setupHelp() string {
@@ -697,10 +948,15 @@ func pluginHelp() string {
 	return "/plugin 打开插件管理面板"
 }
 
+func modelHelp() string {
+	return "/model 打开聊天模型配置面板（仅超级管理员）"
+}
+
 func adminHelp() string {
 	return strings.Join([]string{
 		"/admin list",
 		"/admin add user:<@user>",
+		"/admin add-batch user1:<@user> [user2] [user3] [user4] [user5]",
 		"/admin remove user:<@user>",
 	}, "\n")
 }

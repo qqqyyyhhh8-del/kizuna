@@ -322,13 +322,15 @@ type ContextBuildRequest struct {
 }
 
 type ContextBuildResponse struct {
-	Override      bool                        `json:"override,omitempty"`
-	SystemPrompt  string                      `json:"system_prompt,omitempty"`
-	PersonaPrompt string                      `json:"persona_prompt,omitempty"`
-	Summary       string                      `json:"summary,omitempty"`
-	Retrieved     []string                    `json:"retrieved,omitempty"`
-	Recent        []PromptConversationMessage `json:"recent,omitempty"`
-	PromptBlocks  []PromptBlock               `json:"prompt_blocks,omitempty"`
+	Override             bool                        `json:"override,omitempty"`
+	ReplaceSystemPrompt  bool                        `json:"replace_system_prompt,omitempty"`
+	ReplacePersonaPrompt bool                        `json:"replace_persona_prompt,omitempty"`
+	SystemPrompt         string                      `json:"system_prompt,omitempty"`
+	PersonaPrompt        string                      `json:"persona_prompt,omitempty"`
+	Summary              string                      `json:"summary,omitempty"`
+	Retrieved            []string                    `json:"retrieved,omitempty"`
+	Recent               []PromptConversationMessage `json:"recent,omitempty"`
+	PromptBlocks         []PromptBlock               `json:"prompt_blocks,omitempty"`
 }
 
 type PromptConversationMessage struct {
@@ -347,8 +349,9 @@ type PromptBuildRequest struct {
 }
 
 type PromptBlock struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role    string           `json:"role"`
+	Content string           `json:"content"`
+	Images  []ImageReference `json:"images,omitempty"`
 }
 
 type PromptBuildResponse struct {
